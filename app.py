@@ -3,6 +3,8 @@ import os
 import json
 import sys
 import subprocess
+import zipfile
+import shutil
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,6 +13,21 @@ from pipeline import graph_loader as gl
 from pipeline import stages
 from pipeline import assembler
 from pipeline import ollama_client as ollama
+
+def clear_extracted_codebase(dest_dir: Path):
+    """Safely delete the temporary extracted codebase, handling read-only files on Windows."""
+    if dest_dir.exists():
+        def remove_readonly(func, path, excinfo):
+            try:
+                os.chmod(path, 0o777)
+                func(path)
+            except Exception:
+                pass
+        try:
+            shutil.rmtree(dest_dir, onerror=remove_readonly)
+        except Exception:
+            pass
+
 
 # ─────────────────────────────────────────────────────────────
 # PAGE CONFIGURATION & STYLING
@@ -123,51 +140,58 @@ def add_log(message: str):
 # ─────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Engine Settings")
-    st.session_state.ollama_url = st.text_input(
-        "Ollama Server URL",
-        value=st.session_state.ollama_url
-    )
-    
-    # Check Connection
-    is_connected, status_msg = ollama.check_connection(st.session_state.ollama_url)
-    if is_connected:
-        st.success(status_msg)
-        # Load available models
-        available_models = ollama.list_models(st.session_state.ollama_url)
-        
-        # Heavy Model selector
-        default_heavy = st.session_state.heavy_model
-        heavy_options = available_models.copy()
-        if default_heavy not in heavy_options:
-            heavy_options.insert(0, default_heavy)
-        st.session_state.heavy_model = st.selectbox(
-            "Heavy Model (A, C, D, E, F)",
-            options=heavy_options,
-            index=heavy_options.index(default_heavy)
+    if st.session_state.step != "setup":
+        st.session_state.ollama_url = st.text_input(
+            "Ollama Server URL",
+            value=st.session_state.ollama_url,
+            key="sidebar_ollama_url"
         )
         
-        # Fast Model selector
-        default_fast = st.session_state.fast_model
-        fast_options = available_models.copy()
-        if default_fast not in fast_options:
-            fast_options.insert(0, default_fast)
-        st.session_state.fast_model = st.selectbox(
-            "Fast Model (B)",
-            options=fast_options,
-            index=fast_options.index(default_fast)
+        # Check Connection
+        is_connected, status_msg = ollama.check_connection(st.session_state.ollama_url)
+        if is_connected:
+            st.success(status_msg)
+            # Load available models
+            available_models = ollama.list_models(st.session_state.ollama_url)
+            
+            # Heavy Model selector
+            default_heavy = st.session_state.heavy_model
+            heavy_options = available_models.copy()
+            if default_heavy not in heavy_options:
+                heavy_options.insert(0, default_heavy)
+            st.session_state.heavy_model = st.selectbox(
+                "Heavy Model (A, C, D, E, F)",
+                options=heavy_options,
+                index=heavy_options.index(default_heavy),
+                key="sidebar_heavy_model"
+            )
+            
+            # Fast Model selector
+            default_fast = st.session_state.fast_model
+            fast_options = available_models.copy()
+            if default_fast not in fast_options:
+                fast_options.insert(0, default_fast)
+            st.session_state.fast_model = st.selectbox(
+                "Fast Model (B)",
+                options=fast_options,
+                index=fast_options.index(default_fast),
+                key="sidebar_fast_model"
+            )
+        else:
+            st.error(status_msg)
+            st.session_state.heavy_model = st.text_input("Heavy Model Override", value=st.session_state.heavy_model, key="sidebar_heavy_manual")
+            st.session_state.fast_model = st.text_input("Fast Model Override", value=st.session_state.fast_model, key="sidebar_fast_manual")
+            
+        st.session_state.concurrency = st.slider(
+            "Stage B Concurrency (workers)",
+            min_value=1,
+            max_value=10,
+            value=st.session_state.concurrency,
+            key="sidebar_concurrency"
         )
     else:
-        st.error(status_msg)
-        st.session_state.heavy_model = st.text_input("Heavy Model Override", value=st.session_state.heavy_model)
-        st.session_state.fast_model = st.text_input("Fast Model Override", value=st.session_state.fast_model)
+        st.info("⚙️ Settings are managed in the main setup panel during this step.")
         
-    st.session_state.concurrency = st.slider(
-        "Stage B Concurrency (workers)",
-        min_value=1,
-        max_value=10,
-        value=st.session_state.concurrency
-    )
-    
     st.markdown("---")
     
     # Progress visualization sidebar
@@ -449,30 +473,133 @@ config = {
 if st.session_state.step == "setup":
     st.markdown("### 📁 Codebase Configuration")
     
-    codebase_input = st.text_input(
-        "Absolute path to local codebase folder",
-        value=st.session_state.codebase_path,
-        placeholder="C:\\Users\\username\\projects\\my-app"
+    # Selection for path or ZIP upload
+    input_method = st.radio(
+        "Select Codebase Input Method",
+        options=["Directory Path on Local Disk", "Upload ZIP Archive (Drag & Drop / Browse)"],
+        horizontal=True
     )
+    
+    codebase_input = ""
+    uploaded_file = None
+    
+    if input_method == "Directory Path on Local Disk":
+        codebase_input = st.text_input(
+            "Absolute path to local codebase folder",
+            value=st.session_state.codebase_path,
+            placeholder="C:\\Users\\username\\projects\\my-app"
+        )
+    else:
+        uploaded_file = st.file_uploader(
+            "Choose a ZIP file of your codebase",
+            type=["zip"],
+            help="Upload a .zip file of your repository. It will be extracted locally."
+        )
+        
+    st.markdown("---")
+    st.markdown("### ⚙️ LLM & Concurrency Settings")
+    
+    col_settings_1, col_settings_2 = st.columns(2)
+    with col_settings_1:
+        st.session_state.ollama_url = st.text_input(
+            "Ollama URL",
+            value=st.session_state.ollama_url,
+            key="ollama_url"
+        )
+        st.session_state.concurrency = st.number_input(
+            "Concurrency Limit (Concurrent Agents / Workers)",
+            min_value=1,
+            max_value=10,
+            value=st.session_state.concurrency,
+            key="concurrency",
+            help="Number of concurrent LLM calls made during leaf node summarization and section writing."
+        )
+    with col_settings_2:
+        # Load available models if connected, else text input
+        is_connected, _ = ollama.check_connection(st.session_state.ollama_url)
+        if is_connected:
+            available_models = ollama.list_models(st.session_state.ollama_url)
+            
+            # Heavy Model
+            heavy_opts = available_models.copy()
+            if st.session_state.heavy_model not in heavy_opts:
+                heavy_opts.insert(0, st.session_state.heavy_model)
+            st.session_state.heavy_model = st.selectbox(
+                "Heavy Model (A, C, D, E, F)",
+                options=heavy_opts,
+                index=heavy_opts.index(st.session_state.heavy_model),
+                key="heavy_model"
+            )
+            
+            # Fast Model
+            fast_opts = available_models.copy()
+            if st.session_state.fast_model not in fast_opts:
+                fast_opts.insert(0, st.session_state.fast_model)
+            st.session_state.fast_model = st.selectbox(
+                "Fast Model (B)",
+                options=fast_opts,
+                index=fast_opts.index(st.session_state.fast_model),
+                key="fast_model"
+            )
+        else:
+            st.session_state.heavy_model = st.text_input(
+                "Heavy Model (A, C, D, E, F)",
+                value=st.session_state.heavy_model,
+                key="heavy_model_manual"
+            )
+            st.session_state.fast_model = st.text_input(
+                "Fast Model (B)",
+                value=st.session_state.fast_model,
+                key="fast_model_manual"
+            )
+            
+    st.markdown("---")
     
     col1, col2 = st.columns([1, 4])
     with col1:
         start_btn = st.button("▶️ Generate SRS", use_container_width=True)
-    
+        
     if start_btn:
-        if not codebase_input:
-            st.error("Please enter a codebase folder path.")
-        else:
-            p = Path(codebase_input)
-            if not p.is_dir():
-                st.error("The specified path does not exist or is not a directory.")
+        if input_method == "Directory Path on Local Disk":
+            if not codebase_input:
+                st.error("Please enter a codebase folder path.")
             else:
-                st.session_state.codebase_path = str(p.resolve())
-                st.session_state.step = "running_phase_1"
-                # Reset statuses
-                st.session_state.stage_status = {i: "pending" for i in range(7)}
-                st.session_state.logs = []
-                st.rerun()
+                p = Path(codebase_input)
+                if not p.is_dir():
+                    st.error("The specified path does not exist or is not a directory.")
+                else:
+                    st.session_state.codebase_path = str(p.resolve())
+                    st.session_state.step = "running_phase_1"
+                    st.session_state.stage_status = {i: "pending" for i in range(7)}
+                    st.session_state.logs = []
+                    st.rerun()
+        else:
+            if not uploaded_file:
+                st.error("Please upload a codebase ZIP file.")
+            else:
+                try:
+                    # Save and extract ZIP file
+                    dest_dir = Path("srs_output/extracted_codebase")
+                    clear_extracted_codebase(dest_dir)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                        zip_ref.extractall(dest_dir)
+                        
+                    # Check if there is only a single subdirectory
+                    contents = list(dest_dir.iterdir())
+                    if len(contents) == 1 and contents[0].is_dir():
+                        codebase_path_resolved = contents[0]
+                    else:
+                        codebase_path_resolved = dest_dir
+                        
+                    st.session_state.codebase_path = str(codebase_path_resolved.resolve())
+                    st.session_state.step = "running_phase_1"
+                    st.session_state.stage_status = {i: "pending" for i in range(7)}
+                    st.session_state.logs = []
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to extract ZIP: {e}")
 
 # --- PAGE 2: PIPELINE RUNNING (PHASE 1) ---
 elif st.session_state.step == "running_phase_1":
