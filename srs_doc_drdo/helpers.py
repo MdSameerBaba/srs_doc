@@ -398,6 +398,9 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
                 })
                 
     # 3. Scan for name matching to build cross-references (implicit calls)
+    # Build a set of existing (source, target) pairs for O(1) duplicate detection
+    edge_set: set[tuple[str, str]] = {(l["source"], l["target"]) for l in links}
+
     for path in Path(codebase_path).rglob("*"):
         if not path.is_file():
             continue
@@ -413,7 +416,7 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
         except Exception:
             continue
             
-        # Get all function node IDs for this file to avoid scanned list recompilation in the inner loop
+        # Get all function node IDs for this file (computed once per file)
         src_fns = [n["id"] for n in nodes if n["file_path"] == rel_path and n["type"] == "function"]
         if not src_fns:
             continue
@@ -424,9 +427,9 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
                 for src_id in src_fns:
                     for target_id in target_ids:
                         if src_id != target_id:
-                            # Avoid duplicates
-                            edge_exists = any(l["source"] == src_id and l["target"] == target_id for l in links)
-                            if not edge_exists:
+                            pair = (src_id, target_id)
+                            if pair not in edge_set:
+                                edge_set.add(pair)
                                 links.append({
                                     "source": src_id,
                                     "target": target_id,

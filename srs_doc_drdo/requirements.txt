@@ -1,4 +1,6 @@
+# Core runtime dependencies for srs_doc_drdo
+# All Ollama communication is done via raw HTTP (requests) — no ollama SDK needed.
+
 streamlit>=1.35.0
 requests>=2.31.0
-ollama>=0.2.1
 PyPDF2>=3.0.0

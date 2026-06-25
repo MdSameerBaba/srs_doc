@@ -90,7 +90,8 @@ def render_generate_tab(client):
                 add_log("Stage 1: Building Architecture Snapshot (Prompt A)...")
                 log_placeholder.code("\n".join(st.session_state.logs[-10:]))
                 try:
-                    arch = stages.run_stage_a(db_path, Path("srs_output/extracted_codebase"), config, add_log)
+                    codebase_dir = Path(st.session_state.codebase_path) if st.session_state.get("codebase_path") else Path("srs_output/extracted_codebase")
+                    arch = stages.run_stage_a(db_path, codebase_dir, config, add_log)
                     st.session_state.architecture = arch
                     st.session_state.stage_status[1] = "complete"
                 except Exception as e:
@@ -106,7 +107,8 @@ def render_generate_tab(client):
                     def stage_b_progress(completed, total):
                         pct = completed / total if total > 0 else 0
                         progress_placeholder.progress(pct, text=f"Summarized {completed}/{total} leaf nodes...")
-                    stages.run_stage_b(db_path, Path("srs_output/extracted_codebase"), config, add_log, stage_b_progress)
+                    codebase_dir = Path(st.session_state.codebase_path) if st.session_state.get("codebase_path") else Path("srs_output/extracted_codebase")
+                    stages.run_stage_b(db_path, codebase_dir, config, add_log, stage_b_progress)
                     progress_placeholder.empty()
                     st.session_state.stage_status[2] = "complete"
                 except Exception as e:
@@ -280,13 +282,15 @@ def render_generate_tab(client):
             final_md, report = stages.run_stage_f(canonical, md, sec_num, sec_title, config, thread_safe_log)
             return sec_num, final_md, report
 
-        workers = min(config["concurrency"], total_sections)
+        # Exclude Section 11 from concurrent LLM generation (auto-generated in Python)
+        srs_sections_to_gen = [(num, title) for num, title in stages.SRS_SECTIONS if num != 11]
+        n_to_gen = len(srs_sections_to_gen)
+        workers = min(config["concurrency"], n_to_gen)
+
+        import time
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            # Exclude Section 11 from concurrent LLM generation
-            srs_sections_to_gen = [(num, title) for num, title in stages.SRS_SECTIONS if num != 11]
             futures_map = {executor.submit(process_section, num, title): (num, title) for num, title in srs_sections_to_gen}
             
-            import time
             while any(not f.done() for f in futures_map):
                 # Flush the thread-safe logs into session state in the main thread
                 while log_queue:
@@ -294,9 +298,9 @@ def render_generate_tab(client):
                 if st.session_state.logs:
                     log_ph.code("\n".join(st.session_state.logs[-12:]))
                 
-                completed = sum(1 for f in futures_map if f.done())
-                pct = completed / total_sections
-                progress_ph.progress(pct, text=f"Writing and auditing sections ({completed}/{total_sections} done)...")
+                done_count = sum(1 for f in futures_map if f.done())
+                pct = done_count / n_to_gen  # denominator is sections actually submitted
+                progress_ph.progress(pct, text=f"Writing and auditing sections ({done_count}/{n_to_gen} done)...")
                 time.sleep(0.5)
 
             # Final check and process results
@@ -310,7 +314,7 @@ def render_generate_tab(client):
                     sec_num, final_md, report = future.result()
                     sections_md[sec_num] = final_md
                     reports[sec_num] = report
-                    add_log(f"✅ Section {num} completed successfully ({report.get('status', 'PASS')}).")
+                    add_log(f"✅ Section {num} completed successfully ({report.get('status', 'UNKNOWN')}).")
                 except Exception as e:
                     add_log(f"❌ Section {num} failed: {e}")
                     sections_md[num] = f"## {num}. {title}\n\n[Failed to generate due to error: {e}]"
@@ -336,7 +340,10 @@ def render_generate_tab(client):
         st.rerun()
 
     # ── Per-section cards ──
-    # Load canonical for individual runs
+    # Load canonical for individual runs — guard against missing file
+    if not canonical_path.exists():
+        st.error("canonical.json not found. Please re-run requirements extraction.")
+        return
     with open(canonical_path, "r", encoding="utf-8") as f:
         canonical = json.load(f)
 
@@ -384,7 +391,7 @@ def render_generate_tab(client):
                     if "verification_reports" not in st.session_state:
                         st.session_state.verification_reports = {}
                     st.session_state.verification_reports[sec_num] = report
-                    st.success(f"✅ Section {sec_num} written and verified ({report.get('status')})!")
+                    st.success(f"✅ Section {sec_num} written and verified ({report.get('status', 'UNKNOWN')})!")
                 except Exception as e:
                     st.error(f"❌ Failed to generate Section {sec_num}: {e}")
                 st.rerun()
