@@ -258,7 +258,9 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
         if not path.is_file():
             continue
         # Skip hidden directories, virtual environments, and caches
-        if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in path.parts):
+        # Use relative parts only — absolute path may contain 'srs_output' etc.
+        rel_parts = path.relative_to(codebase_path).parts
+        if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
             continue
             
         rel_path = str(path.relative_to(codebase_path))
@@ -404,7 +406,8 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
     for path in Path(codebase_path).rglob("*"):
         if not path.is_file():
             continue
-        if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in path.parts):
+        rel_parts = path.relative_to(codebase_path).parts
+        if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
             continue
         rel_path = str(path.relative_to(codebase_path))
         ext = path.suffix.lower()
@@ -442,7 +445,8 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
     for path in Path(codebase_path).rglob("*"):
         if not path.is_file():
             continue
-        if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in path.parts):
+        rel_parts = path.relative_to(codebase_path).parts
+        if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
             continue
         rel_path = str(path.relative_to(codebase_path))
         if path.suffix.lower() in SUPPORTED_EXTENSIONS:
