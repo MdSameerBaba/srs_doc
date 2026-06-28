@@ -57,29 +57,28 @@ RULES:
 """
 
 _PROMPT_B = """\
-You are summarizing a single code unit. Be literal — describe only what this code does.
+You are summarizing multiple code units from a codebase. Be literal — describe only what each unit does.
 
-INPUT:
-- Signature: {signature}
-- Source code:
-{code_slice}
-- Direct calls made: {call_list}
-- File: {file_path}, lines {line_start}-{line_end}
+INPUT — JSON array of code units:
+{units_json}
 
-OUTPUT (JSON only, no other text):
-{{
-  "id": "{node_id}",
-  "summary": "<1-2 sentences describing what this code does>",
-  "side_effects": ["..."],
-  "inputs": ["..."],
-  "outputs": ["..."],
-  "evidence": {{"file": "{file_path}", "lines": [{line_start}, {line_end}]}}
-}}
+OUTPUT (JSON array only, no other text):
+[
+  {{
+    "id": "<exact id from input>",
+    "summary": "<1-2 sentences describing what this code does>",
+    "side_effects": ["<side effect if any>"],
+    "inputs": ["<parameter or input>"],
+    "outputs": ["<return value or output>"]
+  }}
+]
 
 RULES:
+- Output ONE array entry for EACH input unit, in the same order.
 - Do NOT guess business intent beyond what the code literally does.
 - If behavior is unclear, set "summary" to "UNCLEAR".
-- Every claim must trace to the provided code.
+- Every entry MUST have the exact same "id" as the corresponding input.
+- Output ONLY the JSON array — no markdown, no preamble.
 """
 
 _PROMPT_C = """\
@@ -315,8 +314,13 @@ def run_stage_a(
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  STAGE B — Leaf Node Summarization  (parallel with ThreadPoolExecutor)
+#  STAGE B — Leaf Node Summarization  (batched + parallel)
 # ═══════════════════════════════════════════════════════════════════
+
+# Number of code units sent to the LLM in a single call.
+# Higher = fewer calls = faster. Lower = more focused summaries.
+_BATCH_SIZE = 10
+
 
 def run_stage_b(
     db_path: Path,
@@ -326,67 +330,114 @@ def run_stage_b(
     progress_cb: Callable[[int, int], None],
 ) -> list[dict]:
     nodes = gl.get_nodes_for_summarization(db_path)
+
+    # ── Filter trivial nodes (< 4 lines): getters, pass-only, stubs ──
+    def _is_trivial(node: dict) -> bool:
+        ls = node.get("line_start") or 0
+        le = node.get("line_end")   or 0
+        return (le - ls) < 3
+
+    nodes = [n for n in nodes if not _is_trivial(n)]
     total = len(nodes)
+
     if total == 0:
-        log("No unsummarized code units found (all cached or no functions/classes).")
+        log("No substantive code units to summarize (all trivial or already cached).")
         return []
 
-    log(f"Summarizing {total} code units with {config['fast_model']} (workers={config['concurrency']})…")
+    batch_size = int(config.get("batch_size", _BATCH_SIZE))
+    batches = [nodes[i: i + batch_size] for i in range(0, total, batch_size)]
+    n_batches = len(batches)
+    log(
+        f"Summarizing {total} code units in {n_batches} batches "
+        f"(batch={batch_size}, workers={config.get('concurrency', 3)}) "
+        f"with {config['fast_model']}…"
+    )
+
     results: list[dict] = []
-    completed = 0
+    completed_nodes = 0
 
-    def _summarize(node: dict) -> dict | None:
-        code = _read_source_slice(
-            node["file_path"], node["line_start"], node["line_end"], codebase_path
-        )
-        calls = gl.get_calls_for_node(db_path, node["id"])
-        sig = f"{node['type']} {node['label']}"
-        if node.get("docstring"):
-            sig += f"  # {node['docstring'][:150]}"
+    def _summarize_batch(batch: list[dict]) -> list[dict]:
+        """Summarize a batch of nodes in one LLM call. Returns list of summary dicts."""
+        units = []
+        for node in batch:
+            code = _read_source_slice(
+                node["file_path"], node["line_start"], node["line_end"], codebase_path
+            )
+            calls = gl.get_calls_for_node(db_path, node["id"])
+            sig = f"{node['type']} {node['label']}"
+            if node.get("docstring"):
+                sig += f"  # {node['docstring'][:100]}"
+            units.append({
+                "id":        node["id"],
+                "signature": sig,
+                "code":      code[:1500],   # trim per-unit to keep prompt bounded
+                "calls":     calls[:10],
+                "file":      node["file_path"] or "unknown",
+                "lines":     [node["line_start"] or 0, node["line_end"] or 0],
+            })
 
-        prompt = _PROMPT_B.format(
-            signature=sig,
-            code_slice=code[:2500],
-            call_list=", ".join(calls[:20]) or "none",
-            file_path=node["file_path"] or "unknown",
-            line_start=node["line_start"] or 0,
-            line_end=node["line_end"]   or 0,
-            node_id=node["id"],
-        )
+        prompt = _PROMPT_B.format(units_json=json.dumps(units, indent=2))
+
+        summaries: list[dict] = []
         try:
-            res = ollama.chat(config["fast_model"], prompt, config["ollama_url"])
-            if isinstance(res, dict):
-                res["id"] = node["id"]
-                gl.save_leaf_summary(db_path, res)
-                return res
-        except Exception as exc:
-            # Save a minimal sentinel so we don't retry indefinitely
-            fallback = {
-                "id": node["id"],
-                "summary": "UNCLEAR",
-                "side_effects": [],
-                "inputs": [],
-                "outputs": [],
-                "evidence": {
-                    "file": node["file_path"],
-                    "lines": [node["line_start"], node["line_end"]],
-                },
-            }
-            gl.save_leaf_summary(db_path, fallback)
-        return None
+            raw = ollama.chat(
+                config["fast_model"], prompt, config["ollama_url"], expect_json=False
+            )
+            # Parse — model should return a JSON array
+            import re as _re
+            arr_match = _re.search(r"\[.*\]", str(raw), _re.DOTALL)
+            if arr_match:
+                parsed = json.loads(arr_match.group(0))
+                if isinstance(parsed, list):
+                    summaries = parsed
+        except Exception:
+            pass
 
-    workers = max(1, min(config.get("concurrency", 3), total))
+        # Build id->summary map for quick lookup
+        sum_map = {s.get("id", ""): s for s in summaries if isinstance(s, dict)}
+
+        saved: list[dict] = []
+        for node in batch:
+            s = sum_map.get(node["id"])
+            if s and isinstance(s, dict) and s.get("summary"):
+                entry = {
+                    "id":          node["id"],
+                    "summary":     s.get("summary", "UNCLEAR"),
+                    "side_effects":s.get("side_effects") or [],
+                    "inputs":      s.get("inputs") or [],
+                    "outputs":     s.get("outputs") or [],
+                    "evidence":    {
+                        "file":  node["file_path"],
+                        "lines": [node["line_start"], node["line_end"]],
+                    },
+                }
+            else:
+                # Fallback sentinel for this node
+                entry = {
+                    "id":          node["id"],
+                    "summary":     "UNCLEAR",
+                    "side_effects":[], "inputs":[], "outputs":[],
+                    "evidence":    {
+                        "file":  node["file_path"],
+                        "lines": [node["line_start"], node["line_end"]],
+                    },
+                }
+            gl.save_leaf_summary(db_path, entry)
+            saved.append(entry)
+        return saved
+
+    workers = max(1, min(config.get("concurrency", 3), n_batches))
     with ThreadPoolExecutor(max_workers=workers) as exe:
-        futures = {exe.submit(_summarize, n): n for n in nodes}
+        futures = {exe.submit(_summarize_batch, b): b for b in batches}
         for fut in as_completed(futures):
-            res = fut.result()
-            if res:
-                results.append(res)
-            completed += 1
-            progress_cb(completed, total)
+            batch_results = fut.result()
+            results.extend(batch_results)
+            completed_nodes += len(futures[fut])
+            progress_cb(min(completed_nodes, total), total)
 
-    log(f"Leaf summarization done: {len(results)}/{total} successful")
+    log(f"Leaf summarization done: {len(results)}/{total} units processed in {n_batches} batches")
     return results
+
 
 
 # ═══════════════════════════════════════════════════════════════════
