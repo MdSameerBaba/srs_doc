@@ -104,6 +104,15 @@ def init_state():
 
 init_state()
 
+# ─── Auto-detect provider on first load ──────────────────────────────────────
+# If Ollama is unreachable but a Gemini API key is available, switch automatically
+if "provider_auto_detected" not in st.session_state:
+    st.session_state.provider_auto_detected = True
+    _is_ollama_up, _ = ollama.check_connection(st.session_state.ollama_host)
+    _has_gemini_key   = bool(st.session_state.get("gemini_api_key", "").strip())
+    if not _is_ollama_up and _has_gemini_key:
+        st.session_state.llm_provider = "gemini"
+
 # ─── Sidebar Engine Settings ──────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Engine Settings")
