@@ -77,6 +77,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─── Session State ────────────────────────────────────────────────────────────
+_default_gemini_key = st.secrets.get("gemini_api_key", "")
+
 def init_state():
     defaults = {
         "project_files":          {},
@@ -95,8 +97,9 @@ def init_state():
         "architecture":           {},
         "canonical_requirements":  {},
         "verification_reports":   {},
-        "llm_provider":           "ollama",
-        "gemini_api_key":         st.secrets.get("gemini_api_key", ""),
+        # If a Gemini key is in secrets, start in Gemini mode automatically
+        "llm_provider":           "gemini" if _default_gemini_key else "ollama",
+        "gemini_api_key":         _default_gemini_key,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -104,14 +107,7 @@ def init_state():
 
 init_state()
 
-# ─── Auto-detect provider on first load ──────────────────────────────────────
-# If Ollama is unreachable but a Gemini API key is available, switch automatically
-if "provider_auto_detected" not in st.session_state:
-    st.session_state.provider_auto_detected = True
-    _is_ollama_up, _ = ollama.check_connection(st.session_state.ollama_host)
-    _has_gemini_key   = bool(st.session_state.get("gemini_api_key", "").strip())
-    if not _is_ollama_up and _has_gemini_key:
-        st.session_state.llm_provider = "gemini"
+# (Provider is set from init_state defaults — no Ollama ping needed)
 
 # ─── Sidebar Engine Settings ──────────────────────────────────────────────────
 with st.sidebar:
