@@ -383,13 +383,8 @@ def run_stage_b(
             raw = ollama.chat(
                 config["fast_model"], prompt, config["ollama_url"], expect_json=False
             )
-            # Parse — model should return a JSON array
-            import re as _re
-            arr_match = _re.search(r"\[.*\]", str(raw), _re.DOTALL)
-            if arr_match:
-                parsed = json.loads(arr_match.group(0))
-                if isinstance(parsed, list):
-                    summaries = parsed
+            # Robust extraction of JSON array using balanced bracket parser
+            summaries = ollama.extract_json_array(str(raw))
         except Exception:
             pass
 
@@ -422,8 +417,18 @@ def run_stage_b(
                         "lines": [node["line_start"], node["line_end"]],
                     },
                 }
-            gl.save_leaf_summary(db_path, entry)
             saved.append(entry)
+        
+        # Save the entire batch in a single database transaction
+        try:
+            gl.save_leaf_summaries_bulk(db_path, saved)
+        except Exception as e:
+            log(f"  ⚠ Bulk save failed, falling back to individual inserts: {e}")
+            for entry in saved:
+                try:
+                    gl.save_leaf_summary(db_path, entry)
+                except Exception:
+                    pass
         return saved
 
     workers = max(1, min(config.get("concurrency", 3), n_batches))

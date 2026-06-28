@@ -69,9 +69,67 @@ def extract_json(text: str) -> dict:
     raise ValueError(f"Could not extract JSON from response (first 300 chars): {text[:300]}")
 
 
-# ─────────────────────────────────────────────────────────────
-# Core chat function
-# ─────────────────────────────────────────────────────────────
+def extract_json_array(text: str) -> list:
+    """
+    Robustly extract the first valid JSON array from LLM output.
+    Uses balanced bracket matching to bypass preamble and postamble text.
+    """
+    if not text:
+        return []
+
+    # 1. Try direct parse
+    text_stripped = text.strip()
+    try:
+        res = json.loads(text_stripped)
+        if isinstance(res, list):
+            return res
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Strip markdown code fences
+    for pattern in [r"```json\s*([\s\S]*?)\s*```", r"```\s*([\s\S]*?)\s*```"]:
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            try:
+                res = json.loads(m.group(1).strip())
+                if isinstance(res, list):
+                    return res
+            except json.JSONDecodeError:
+                pass
+
+    # 3. Find the largest balanced JSON array
+    best: list | None = None
+    best_len = 0
+    for i, ch in enumerate(text):
+        if ch == "[":
+            depth = 0
+            for j in range(i, len(text)):
+                if text[j] == "[":
+                    depth += 1
+                elif text[j] == "]":
+                    depth -= 1
+                if depth == 0:
+                    candidate = text[i : j + 1]
+                    if len(candidate) > best_len:
+                        try:
+                            parsed = json.loads(candidate)
+                            if isinstance(parsed, list):
+                                best = parsed
+                                best_len = len(candidate)
+                        except json.JSONDecodeError:
+                            pass
+                    break
+
+    if best is not None:
+        return best
+
+    raise ValueError(f"Could not extract JSON array from response (first 300 chars): {text[:300]}")
+
+
+# Global configuration for provider switching
+PROVIDER = "ollama"
+API_KEY = ""
+
 
 def chat(
     model: str,
@@ -82,19 +140,78 @@ def chat(
     temperature: float = 0.1,
 ) -> Union[dict, str]:
     """
-    Send a chat message to a local Ollama model.
-
-    Args:
-        model:        Ollama model name (e.g. 'gpt-oss-20b', 'gemma3n:e4b')
-        prompt:       User prompt string
-        base_url:     Ollama server URL
-        expect_json:  If True, parse response as JSON; otherwise return raw string
-        max_retries:  Number of retry attempts on failure
-        temperature:  Sampling temperature (lower = more deterministic)
-
-    Returns:
-        dict if expect_json=True, str otherwise
+    Send a chat message to the configured LLM provider (Ollama or Gemini API).
     """
+    if PROVIDER == "gemini":
+        return _chat_gemini(model, prompt, expect_json, max_retries, temperature)
+    return _chat_ollama(model, prompt, base_url, expect_json, max_retries, temperature)
+
+
+def _chat_gemini(
+    model: str,
+    prompt: str,
+    expect_json: bool = True,
+    max_retries: int = 3,
+    temperature: float = 0.1,
+) -> Union[dict, str]:
+    # Map typical local model nicknames to official Gemini names
+    actual_model = model
+    if not model.startswith("gemini-"):
+        # Map our default placeholders
+        if "heavy" in model.lower() or "20b" in model.lower() or "pro" in model.lower() or "oss" in model.lower():
+            actual_model = "gemini-2.5-pro"
+        else:
+            actual_model = "gemini-2.5-flash"
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{actual_model}:generateContent?key={API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": temperature
+        }
+    }
+    
+    if expect_json:
+        payload["generationConfig"]["responseMimeType"] = "application/json"
+
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
+            response.raise_for_status()
+            res_json = response.json()
+            
+            content = res_json["candidates"][0]["content"]["parts"][0]["text"]
+            
+            if expect_json:
+                return extract_json(content)
+            return content
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+
+    raise RuntimeError(
+        f"Gemini API call failed after {max_retries} attempts. Last error: {last_error}"
+    )
+
+
+def _chat_ollama(
+    model: str,
+    prompt: str,
+    base_url: str = "http://localhost:11434",
+    expect_json: bool = True,
+    max_retries: int = 3,
+    temperature: float = 0.1,
+) -> Union[dict, str]:
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],

@@ -231,6 +231,31 @@ def save_leaf_summary(db_path: Path, summary: dict) -> None:
         )
 
 
+def save_leaf_summaries_bulk(db_path: Path, summaries: list[dict]) -> None:
+    """Save multiple leaf summaries inside a single SQLite transaction."""
+    if not summaries:
+        return
+    with _conn(db_path) as c:
+        c.executemany(
+            """
+            INSERT OR REPLACE INTO leaf_summaries
+                (node_id, summary, side_effects, inputs, outputs, evidence)
+            VALUES (?,?,?,?,?,?)
+            """,
+            [
+                (
+                    s.get("id", ""),
+                    s.get("summary", ""),
+                    json.dumps(s.get("side_effects", [])),
+                    json.dumps(s.get("inputs", [])),
+                    json.dumps(s.get("outputs", [])),
+                    json.dumps(s.get("evidence", {})),
+                )
+                for s in summaries
+            ]
+        )
+
+
 def get_all_leaf_summaries(db_path: Path) -> list[dict]:
     with _conn(db_path) as c:
         rows = c.execute(

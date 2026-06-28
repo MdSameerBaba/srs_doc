@@ -95,6 +95,8 @@ def init_state():
         "architecture":           {},
         "canonical_requirements":  {},
         "verification_reports":   {},
+        "llm_provider":           "ollama",
+        "gemini_api_key":         st.secrets.get("gemini_api_key", ""),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -105,46 +107,79 @@ init_state()
 # ─── Sidebar Engine Settings ──────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Engine Settings")
-    st.session_state.ollama_host = st.text_input(
-        "Ollama Server URL",
-        value=st.session_state.ollama_host,
-        key="ollama_host_input"
+
+    # ── LLM Provider selector ──
+    st.session_state.llm_provider = st.radio(
+        "LLM Provider",
+        options=["ollama", "gemini"],
+        index=0 if st.session_state.llm_provider == "ollama" else 1,
+        horizontal=True,
+        key="llm_provider_radio"
     )
-    
-    # Check Connection and auto-detect models
-    is_connected, status_msg = ollama.check_connection(st.session_state.ollama_host)
-    if is_connected:
-        st.success(status_msg)
-        available_models = ollama.list_models(st.session_state.ollama_host)
-        
-        # Heavy Model selector
-        default_heavy = st.session_state.current_model
-        heavy_options = available_models.copy()
-        if default_heavy not in heavy_options:
-            heavy_options.insert(0, default_heavy)
-        st.session_state.current_model = st.selectbox(
-            "Heavy Model (A, C, D, E, F)",
-            options=heavy_options,
-            index=heavy_options.index(default_heavy),
-            key="heavy_model_select"
+
+    if st.session_state.llm_provider == "gemini":
+        st.session_state.gemini_api_key = st.text_input(
+            "Gemini API Key",
+            value=st.session_state.gemini_api_key,
+            type="password",
+            placeholder="AIza...",
+            key="gemini_api_key_input"
         )
-        
-        # Fast Model selector
-        default_fast = st.session_state.fast_model
-        fast_options = available_models.copy()
-        if default_fast not in fast_options:
-            fast_options.insert(0, default_fast)
-        st.session_state.fast_model = st.selectbox(
-            "Fast Model (B)",
-            options=fast_options,
-            index=fast_options.index(default_fast),
-            key="fast_model_select"
+        # Show fixed model info
+        st.info(
+            "🔵 **Heavy stages (A/C/D/E/F):** gemini-2.5-pro\n\n"
+            "⚡ **Fast stage (B):** gemini-2.5-flash",
+            icon=None
         )
     else:
-        st.error(status_msg)
-        st.session_state.current_model = st.text_input("Heavy Model Override", value=st.session_state.current_model, key="heavy_model_manual")
-        st.session_state.fast_model = st.text_input("Fast Model Override", value=st.session_state.fast_model, key="fast_model_manual")
-        
+        st.session_state.ollama_host = st.text_input(
+            "Ollama Server URL",
+            value=st.session_state.ollama_host,
+            key="ollama_host_input"
+        )
+
+        # Check Connection and auto-detect models
+        is_connected, status_msg = ollama.check_connection(st.session_state.ollama_host)
+        if is_connected:
+            st.success(status_msg)
+            available_models = ollama.list_models(st.session_state.ollama_host)
+
+            # Heavy Model selector
+            default_heavy = st.session_state.current_model
+            heavy_options = available_models.copy()
+            if default_heavy not in heavy_options:
+                heavy_options.insert(0, default_heavy)
+            st.session_state.current_model = st.selectbox(
+                "Heavy Model (A, C, D, E, F)",
+                options=heavy_options,
+                index=heavy_options.index(default_heavy),
+                key="heavy_model_select"
+            )
+
+            # Fast Model selector
+            default_fast = st.session_state.fast_model
+            fast_options = available_models.copy()
+            if default_fast not in fast_options:
+                fast_options.insert(0, default_fast)
+            st.session_state.fast_model = st.selectbox(
+                "Fast Model (B)",
+                options=fast_options,
+                index=fast_options.index(default_fast),
+                key="fast_model_select"
+            )
+        else:
+            st.error(status_msg)
+            st.session_state.current_model = st.text_input(
+                "Heavy Model Override",
+                value=st.session_state.current_model,
+                key="heavy_model_manual"
+            )
+            st.session_state.fast_model = st.text_input(
+                "Fast Model Override",
+                value=st.session_state.fast_model,
+                key="fast_model_manual"
+            )
+
     st.session_state.concurrency = st.slider(
         "Stage B Concurrency (workers)",
         min_value=1,
@@ -152,7 +187,7 @@ with st.sidebar:
         value=st.session_state.concurrency,
         key="concurrency_slider"
     )
-    
+
     st.markdown("---")
 
 # ─── Header ───────────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pipeline import stages
 from pipeline import assembler
+from pipeline import ollama_client as _ollama_client
 
 def add_log(message: str):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -24,11 +25,17 @@ def render_generate_tab(client):
     db_path = output_dir / "srs_graph.db"
     canonical_path = output_dir / "canonical.json"
 
+    # ── Wire LLM provider BEFORE any stage runs ──
+    # This sets module-level variables on ollama_client so all ollama.chat()
+    # calls in stages.py transparently route to Gemini or Ollama.
+    _ollama_client.PROVIDER = st.session_state.get("llm_provider", "ollama")
+    _ollama_client.API_KEY  = st.session_state.get("gemini_api_key", "")
+
     # Configuration Dictionary
     config = {
         "heavy_model": st.session_state.current_model,
-        "fast_model": st.session_state.get("fast_model", "gemma3n:e4b"),
-        "ollama_url": st.session_state.ollama_host,
+        "fast_model":  st.session_state.get("fast_model", "gemma3n:e4b"),
+        "ollama_url":  st.session_state.ollama_host,
         "concurrency": st.session_state.get("concurrency", 3),
     }
 
@@ -46,6 +53,11 @@ def render_generate_tab(client):
                 st.session_state.requirements_frozen = not (mode & stat.S_IWRITE)
             except Exception:
                 st.session_state.requirements_frozen = False
+
+    # ── Gemini provider guard ──
+    if st.session_state.get("llm_provider") == "gemini" and not st.session_state.get("gemini_api_key", "").strip():
+        st.error("🔴 **Gemini API key is missing.** Please enter your API key in the sidebar before generating.")
+        return
 
     # ─────────────────────────────────────────────────────────────
     # STEP 1: REQUIREMENT EXTRACTION & FREEZE GATE (PHASE 1)

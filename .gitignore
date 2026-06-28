@@ -17,3 +17,7 @@ graphify-out/
 .vscode/
 .idea/
 .DS_Store
+
+# Streamlit secrets (API keys — NEVER commit)
+**/secrets.toml
+.streamlit/secrets.toml

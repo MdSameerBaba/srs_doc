@@ -38,8 +38,12 @@ def render_preview_tab():
     st.markdown(f"### 📄 SRS Document Preview — {done_count}/{total_expected} Sections Written")
 
     # Assemble full document
-    project_name = Path(st.session_state.codebase_path).name
-    if (project_name == "extracted_codebase" or not project_name) and st.session_state.get("archive_name"):
+    project_name = "Unknown Project"
+    if st.session_state.get("codebase_path"):
+        p_name = Path(st.session_state.codebase_path).name
+        if p_name and p_name != "extracted_codebase":
+            project_name = p_name
+    if project_name == "Unknown Project" and st.session_state.get("archive_name"):
         project_name = st.session_state.archive_name
     full_doc = assembler.assemble_srs(sections_by_num, canonical, project_name)
     st.session_state.full_srs_doc = full_doc
