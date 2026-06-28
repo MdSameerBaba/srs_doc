@@ -99,7 +99,10 @@ def chat(
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "options": {"temperature": temperature},
+        "options": {
+            "temperature": temperature,
+            "num_ctx": 16384
+        },
     }
     if expect_json:
         payload["format"] = "json"
