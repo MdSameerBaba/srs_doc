@@ -40,7 +40,12 @@ def render_generate_tab(client):
         st.session_state.requirements_frozen = False
         if canonical_path.exists():
             # On Linux/Windows, check if read-only (we can check file permissions)
-            st.session_state.requirements_frozen = not os.access(canonical_path, os.W_OK)
+            import stat
+            try:
+                mode = os.stat(canonical_path).st_mode
+                st.session_state.requirements_frozen = not (mode & stat.S_IWRITE)
+            except Exception:
+                st.session_state.requirements_frozen = False
 
     # ─────────────────────────────────────────────────────────────
     # STEP 1: REQUIREMENT EXTRACTION & FREEZE GATE (PHASE 1)
@@ -268,11 +273,15 @@ def render_generate_tab(client):
         total_sections = len(stages.SRS_SECTIONS)
         completed = 0
 
-        # Thread-safe log collection list (GIL ensures list.append is thread-safe)
+        # Thread-safe log collection list (using Lock for absolute safety)
+        import threading
         log_queue = []
+        log_lock = threading.Lock()
+        
         def thread_safe_log(msg):
             timestamp = datetime.now().strftime("%H:%M:%S")
-            log_queue.append(f"[{timestamp}] {msg}")
+            with log_lock:
+                log_queue.append(f"[{timestamp}] {msg}")
 
         def process_section(sec_num, sec_title):
             thread_safe_log(f"Starting Thread: Section {sec_num} ({sec_title})")
@@ -293,8 +302,12 @@ def render_generate_tab(client):
             
             while any(not f.done() for f in futures_map):
                 # Flush the thread-safe logs into session state in the main thread
-                while log_queue:
-                    st.session_state.logs.append(log_queue.pop(0))
+                to_flush = []
+                with log_lock:
+                    while log_queue:
+                        to_flush.append(log_queue.pop(0))
+                for l in to_flush:
+                    st.session_state.logs.append(l)
                 if st.session_state.logs:
                     log_ph.code("\n".join(st.session_state.logs[-12:]))
                 
@@ -304,8 +317,12 @@ def render_generate_tab(client):
                 time.sleep(0.5)
 
             # Final check and process results
-            while log_queue:
-                st.session_state.logs.append(log_queue.pop(0))
+            to_flush = []
+            with log_lock:
+                while log_queue:
+                    to_flush.append(log_queue.pop(0))
+            for l in to_flush:
+                st.session_state.logs.append(l)
             if st.session_state.logs:
                 log_ph.code("\n".join(st.session_state.logs[-12:]))
 
@@ -331,8 +348,12 @@ def render_generate_tab(client):
         st.session_state.verification_reports = reports
 
         # Assemble full documents
-        proj_name = Path(st.session_state.codebase_path).name
-        if (proj_name == "extracted_codebase" or not proj_name) and st.session_state.get("archive_name"):
+        proj_name = "Unknown Project"
+        if st.session_state.get("codebase_path"):
+            p_name = Path(st.session_state.codebase_path).name
+            if p_name and p_name != "extracted_codebase":
+                proj_name = p_name
+        if proj_name == "Unknown Project" and st.session_state.get("archive_name"):
             proj_name = st.session_state.archive_name
         st.session_state.full_srs_doc = assembler.assemble_srs(sections_md, canonical, proj_name)
         

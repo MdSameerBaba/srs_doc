@@ -424,9 +424,12 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
         if not src_fns:
             continue
 
-        # Check if this file references any function name from the codebase e.g. "func_name("
-        for func_name, target_ids in func_name_to_ids.items():
-            if f"{func_name}(" in content or f"{func_name} (" in content:
+        # Check if this file references any function name from the codebase
+        # Find all words followed by '(' in the content to lookup in O(1)
+        called_names = set(re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", content))
+        for func_name in called_names:
+            if func_name in func_name_to_ids:
+                target_ids = func_name_to_ids[func_name]
                 for src_id in src_fns:
                     for target_id in target_ids:
                         if src_id != target_id:
