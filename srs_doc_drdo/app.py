@@ -97,8 +97,8 @@ def init_state():
         "architecture":           {},
         "canonical_requirements":  {},
         "verification_reports":   {},
-        # If a Gemini key is in secrets, start in Gemini mode automatically
-        "llm_provider":           "gemini" if _default_gemini_key else "ollama",
+        # Default to Ollama; switch to Gemini manually via sidebar radio
+        "llm_provider":           "ollama",
         "gemini_api_key":         _default_gemini_key,
     }
     for k, v in defaults.items():
