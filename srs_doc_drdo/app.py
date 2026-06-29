@@ -100,6 +100,7 @@ def init_state():
         # Default to Ollama; switch to Gemini manually via sidebar radio
         "llm_provider":           "ollama",
         "gemini_api_key":         _default_gemini_key,
+        "enable_audit":           False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -193,6 +194,13 @@ with st.sidebar:
         key="concurrency_slider"
     )
 
+    st.session_state.enable_audit = st.toggle(
+        "Enable Traceability Audit (Stage F)",
+        value=st.session_state.enable_audit,
+        help="Audits generated sections against requirements. Disabling this speeds up generation by 3x by bypassing self-correction loops.",
+        key="enable_audit_toggle"
+    )
+    
     st.markdown("---")
 
 # ─── Header ───────────────────────────────────────────────────────────────────

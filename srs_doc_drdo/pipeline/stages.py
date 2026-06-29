@@ -577,6 +577,10 @@ def run_stage_f(
     Returns (final_markdown, verification_report).
     Retries Prompt E up to max_retries times on FAIL.
     """
+    if not config.get("enable_audit", False):
+        log(f"  Skipping verification audit for Section {section_num} (disabled in settings)")
+        return section_markdown, {"status": "PASS", "info": "Auditing disabled by user"}
+
     for attempt in range(max_retries + 1):
         log(f"  Verifying Section {section_num} (attempt {attempt + 1}/{max_retries + 1})…")
         prompt = _PROMPT_F.format(

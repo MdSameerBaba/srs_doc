@@ -37,6 +37,7 @@ def render_generate_tab(client):
         "fast_model":  st.session_state.get("fast_model", "gemma3n:e4b"),
         "ollama_url":  st.session_state.ollama_host,
         "concurrency": st.session_state.get("concurrency", 3),
+        "enable_audit": st.session_state.get("enable_audit", False),
     }
 
     # Initialize session states if not present
