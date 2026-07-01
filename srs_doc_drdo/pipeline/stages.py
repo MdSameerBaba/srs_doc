@@ -562,8 +562,8 @@ def run_stage_e(
         section_instruction=section_instruction
     )
     result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], expect_json=False)
-    # Strip any <think>...</think> blocks qwen3 may prepend to its prose output
-    return ollama._strip_think_tags(str(result))
+    # Strip reasoning blocks / preamble any model may add before the prose
+    return ollama.clean_llm_output(str(result))
 
 
 # ═══════════════════════════════════════════════════════════════════
