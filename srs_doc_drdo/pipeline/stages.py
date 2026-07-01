@@ -150,6 +150,8 @@ _PROMPT_E = """You are a senior systems analyst and technical writer producing a
 YOUR ONLY INPUT SOURCE — CANONICAL REQUIREMENTS (frozen):
 {canonical}
 
+{previous_sections_context}
+
 TASK INSTRUCTION FOR THIS SECTION:
 {section_instruction}
 
@@ -203,6 +205,21 @@ SRS_SECTIONS: list[tuple[int, str]] = [
     (10, "Internal and External Interface Requirement"),
     (11, "Traceability Matrix"),
 ]
+
+# ── Section number → SECTION_PROMPTS key mapping (single source of truth) ──
+_SECTION_KEYS: dict[int, str] = {
+    1:  "1_introduction",
+    2:  "2_acronyms",
+    3:  "3_reference_documents",
+    4:  "4_product_description",
+    5:  "5_system_features",
+    6:  "6_states_and_modes",
+    7:  "7_detailed_sw_requirement",
+    8:  "8_timing_requirements",
+    9:  "9_loadable_data",
+    10: "10_interface_requirements",
+    11: "11_traceability_matrix",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -529,24 +546,11 @@ def run_stage_e(
     section_title: str,
     config: dict,
     log: Callable[[str], None],
+    previous_sections_context: str = "",
 ) -> str:
     log(f"Writing Section {section_num}: {section_title}…")
-    
-    # Map section number to the key in constants.SECTION_PROMPTS
-    keys = {
-        1: "1_introduction",
-        2: "2_acronyms",
-        3: "3_reference_documents",
-        4: "4_product_description",
-        5: "5_system_features",
-        6: "6_states_and_modes",
-        7: "7_detailed_sw_requirement",
-        8: "8_timing_requirements",
-        9: "9_loadable_data",
-        10: "10_interface_requirements",
-        11: "11_traceability_matrix"
-    }
-    sec_key = keys.get(section_num, "")
+
+    sec_key = _SECTION_KEYS.get(section_num, "")
     section_instruction = constants.SECTION_PROMPTS.get(
         sec_key,
         f"Generate only the SRS section titled '{section_title}' based strictly and exclusively on the canonical requirements."
@@ -554,6 +558,7 @@ def run_stage_e(
     
     prompt = _PROMPT_E.format(
         canonical=json.dumps(canonical, indent=2),
+        previous_sections_context=previous_sections_context,
         section_instruction=section_instruction
     )
     result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], expect_json=False)
@@ -572,6 +577,7 @@ def run_stage_f(
     config: dict,
     log: Callable[[str], None],
     max_retries: int = 2,
+    previous_sections_context: str = "",
 ) -> tuple[str, dict]:
     """
     Returns (final_markdown, verification_report).
@@ -602,21 +608,8 @@ def run_stage_f(
         if attempt < max_retries:
             log(f"  ⚠ Section {section_num} failed — regenerating…")
             issues = json.dumps(report, indent=2)
-            
-            keys = {
-                1: "1_introduction",
-                2: "2_acronyms",
-                3: "3_reference_documents",
-                4: "4_product_description",
-                5: "5_system_features",
-                6: "6_states_and_modes",
-                7: "7_detailed_sw_requirement",
-                8: "8_timing_requirements",
-                9: "9_loadable_data",
-                10: "10_interface_requirements",
-                11: "11_traceability_matrix"
-            }
-            sec_key = keys.get(section_num, "")
+
+            sec_key = _SECTION_KEYS.get(section_num, "")
             section_instruction = constants.SECTION_PROMPTS.get(
                 sec_key,
                 f"Generate only the SRS section titled '{section_title}' based strictly and exclusively on the canonical requirements."
@@ -625,6 +618,7 @@ def run_stage_f(
             regen_prompt = (
                 _PROMPT_E.format(
                     canonical=json.dumps(canonical, indent=2),
+                    previous_sections_context=previous_sections_context,
                     section_instruction=section_instruction,
                 )
                 + f"\n\nPREVIOUS ATTEMPT FAILED VERIFICATION. Issues:\n{issues}\n"

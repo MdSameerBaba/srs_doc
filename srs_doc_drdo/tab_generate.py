@@ -34,7 +34,7 @@ def render_generate_tab(client):
     # Configuration Dictionary
     config = {
         "heavy_model": st.session_state.current_model,
-        "fast_model":  st.session_state.get("fast_model", "gemma3n:e4b"),
+        "fast_model":  st.session_state.get("fast_model", "qwen3:latest"),
         "ollama_url":  st.session_state.ollama_host,
         "concurrency": st.session_state.get("concurrency", 3),
         "enable_audit": st.session_state.get("enable_audit", False),
@@ -255,7 +255,7 @@ def render_generate_tab(client):
     col_all1, col_all2 = st.columns([2, 1])
     with col_all1:
         gen_all = st.button(
-            "🚀 Generate ALL Sections (Concurrent Thread Pool)",
+            "🚀 Generate ALL Sections (Sequential — Context-Aware)",
             use_container_width=True,
             type="primary",
             key="gen_all_btn"
@@ -282,8 +282,16 @@ def render_generate_tab(client):
         progress_ph = st.empty()
         log_ph = st.empty()
 
-        with open(canonical_path, "r", encoding="utf-8") as f:
-            canonical = json.load(f)
+        try:
+            with open(canonical_path, "r", encoding="utf-8") as f:
+                canonical = json.load(f)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            st.error(f"❌ Cannot load canonical requirements: {e}. Please re-run extraction.")
+            st.session_state.generating_all = False
+            st.rerun()
+            return
 
         srs_sections_to_gen = [(num, title) for num, title in stages.SRS_SECTIONS if num != 11]
         n_to_gen = len(srs_sections_to_gen)
