@@ -321,7 +321,7 @@ def _chat_ollama(
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_ctx": 16384,
+            "num_ctx": 64000,
         },
     }
     if expect_json:

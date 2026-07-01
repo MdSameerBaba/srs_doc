@@ -104,6 +104,8 @@ def render_upload_tab():
                 st.session_state.project_files = loaded
                 st.session_state.srs_sections  = {}
                 st.session_state.archive_name  = Path(archive.name).stem
+                st.session_state.phase_1_complete = False
+                st.session_state.requirements_frozen = False
                 st.markdown(
                     f'<div class="strip-success">✅ Successfully loaded <strong>{len(loaded)}</strong> '
                     f'files from <strong>{archive.name}</strong> '
