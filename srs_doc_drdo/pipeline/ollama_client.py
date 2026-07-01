@@ -17,11 +17,29 @@ OLLAMA_TIMEOUT = 360  # 6 minutes — local LLMs can be slow on large prompts
 # JSON extraction
 # ─────────────────────────────────────────────────────────────
 
+def _strip_think_tags(text: str) -> str:
+    """
+    Remove <think>...</think> reasoning blocks emitted by qwen3/deepseek
+    thinking models before the actual JSON response.
+    Also strips partial open tags that were cut off mid-output.
+    """
+    # Remove complete <think>...</think> blocks (possibly multi-line)
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    # Remove any dangling unclosed <think> tag and everything after it
+    text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
 def extract_json(text: str) -> dict:
     """
     Robustly extract the first valid JSON object from LLM output.
     Local models sometimes wrap JSON in markdown fences or add preamble text.
     """
+    if not text:
+        return {}
+
+    # Strip qwen3/deepseek <think> reasoning blocks first
+    text = _strip_think_tags(text)
     if not text:
         return {}
 
@@ -74,6 +92,11 @@ def extract_json_array(text: str) -> list:
     Robustly extract the first valid JSON array from LLM output.
     Uses balanced bracket matching to bypass preamble and postamble text.
     """
+    if not text:
+        return []
+
+    # Strip qwen3/deepseek <think> reasoning blocks first
+    text = _strip_think_tags(text)
     if not text:
         return []
 

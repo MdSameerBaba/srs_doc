@@ -562,7 +562,8 @@ def run_stage_e(
         section_instruction=section_instruction
     )
     result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], expect_json=False)
-    return str(result)
+    # Strip any <think>...</think> blocks qwen3 may prepend to its prose output
+    return ollama._strip_think_tags(str(result))
 
 
 # ═══════════════════════════════════════════════════════════════════
