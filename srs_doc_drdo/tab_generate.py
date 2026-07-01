@@ -113,6 +113,8 @@ def render_generate_tab(client):
                     st.session_state.architecture = arch
                     st.session_state.stage_status[1] = "complete"
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     st.session_state.stage_status[1] = "failed"
                     st.error(f"Stage 1 failed: {e}")
                     return
@@ -130,6 +132,8 @@ def render_generate_tab(client):
                     progress_placeholder.empty()
                     st.session_state.stage_status[2] = "complete"
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     st.session_state.stage_status[2] = "failed"
                     st.error(f"Stage 2 failed: {e}")
                     return
@@ -146,6 +150,8 @@ def render_generate_tab(client):
                     progress_placeholder.empty()
                     st.session_state.stage_status[3] = "complete"
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     st.session_state.stage_status[3] = "failed"
                     st.error(f"Stage 3 failed: {e}")
                     return
@@ -172,6 +178,8 @@ def render_generate_tab(client):
                     add_log("✅ Phase 1 complete. Locked in requirements.")
                     st.rerun()
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     st.session_state.stage_status[4] = "failed"
                     st.error(f"Stage 4 failed: {e}")
                     return
@@ -315,6 +323,8 @@ def render_generate_tab(client):
                 st.session_state.verification_reports[num] = report
                 add_log(f"✅ Section {num} successfully generated.")
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 add_log(f"❌ Section {num} failed: {e}")
                 st.session_state.srs_sections[f"{num}_sec"] = f"## {num}. {title}\n\n[Failed to generate due to error: {e}]"
                 if "verification_reports" not in st.session_state:
@@ -429,6 +439,8 @@ def render_generate_tab(client):
                     st.session_state.verification_reports[sec_num] = report
                     st.success(f"✅ Section {sec_num} written and verified ({report.get('status', 'UNKNOWN')})!")
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     st.error(f"❌ Failed to generate Section {sec_num}: {e}")
                 st.rerun()
 
