@@ -268,109 +268,99 @@ def render_generate_tab(client):
 
     st.markdown("---")
 
-    # ── Handle concurrent full document generation ──
-    if gen_all:
+    # ── Handle sequential context-aware generation loop ──
+    if st.session_state.get("generating_all"):
         status_ph = st.empty()
         progress_ph = st.empty()
         log_ph = st.empty()
-        st.session_state.logs = []
-
-        add_log("🚀 Launching concurrent section generation and audit threads...")
-        log_ph.code("\n".join(st.session_state.logs[-10:]))
 
         with open(canonical_path, "r", encoding="utf-8") as f:
             canonical = json.load(f)
 
-        sections_md = {}
-        reports = {}
-        total_sections = len(stages.SRS_SECTIONS)
-        completed = 0
-
-        # Thread-safe log collection list (using Lock for absolute safety)
-        import threading
-        log_queue = []
-        log_lock = threading.Lock()
-        
-        def thread_safe_log(msg):
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            with log_lock:
-                log_queue.append(f"[{timestamp}] {msg}")
-
-        def process_section(sec_num, sec_title):
-            thread_safe_log(f"Starting Thread: Section {sec_num} ({sec_title})")
-            # Stage E: Write
-            md = stages.run_stage_e(canonical, sec_num, sec_title, config, thread_safe_log)
-            # Stage F: Audit
-            final_md, report = stages.run_stage_f(canonical, md, sec_num, sec_title, config, thread_safe_log)
-            return sec_num, final_md, report
-
-        # Exclude Section 11 from concurrent LLM generation (auto-generated in Python)
         srs_sections_to_gen = [(num, title) for num, title in stages.SRS_SECTIONS if num != 11]
         n_to_gen = len(srs_sections_to_gen)
-        workers = min(config["concurrency"], n_to_gen)
+        current_idx = st.session_state.get("gen_all_index", 0)
 
-        import time
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures_map = {executor.submit(process_section, num, title): (num, title) for num, title in srs_sections_to_gen}
-            
-            while any(not f.done() for f in futures_map):
-                # Flush the thread-safe logs into session state in the main thread
-                to_flush = []
-                with log_lock:
-                    while log_queue:
-                        to_flush.append(log_queue.pop(0))
-                for l in to_flush:
-                    st.session_state.logs.append(l)
-                if st.session_state.logs:
-                    log_ph.code("\n".join(st.session_state.logs[-12:]))
-                
-                done_count = sum(1 for f in futures_map if f.done())
-                pct = done_count / n_to_gen  # denominator is sections actually submitted
-                progress_ph.progress(pct, text=f"Writing and auditing sections ({done_count}/{n_to_gen} done)...")
-                time.sleep(0.5)
+        if current_idx < n_to_gen:
+            num, title = srs_sections_to_gen[current_idx]
+            status_ph.markdown(f"### ⚙️ Generating Section {num}: {title}...")
+            progress_ph.progress(current_idx / n_to_gen, text=f"Writing section {current_idx + 1}/{n_to_gen}...")
 
-            # Final check and process results
-            to_flush = []
-            with log_lock:
-                while log_queue:
-                    to_flush.append(log_queue.pop(0))
-            for l in to_flush:
-                st.session_state.logs.append(l)
-            if st.session_state.logs:
-                log_ph.code("\n".join(st.session_state.logs[-12:]))
+            # ── Accumulate context of previous sections ──
+            prev_texts = []
+            for p_num in range(1, num):
+                p_md = st.session_state.srs_sections.get(f"{p_num}_sec", "")
+                if p_md.strip():
+                    # Truncate to prevent context bloat but keep main structure
+                    truncated_md = p_md[:3000] + "\n...(truncated for context)..." if len(p_md) > 3000 else p_md
+                    prev_texts.append(f"--- START SECTION {p_num}: {stages.SRS_SECTIONS[p_num-1][1]} ---\n{truncated_md}\n--- END SECTION {p_num} ---")
 
-            for future, (num, title) in futures_map.items():
-                try:
-                    sec_num, final_md, report = future.result()
-                    sections_md[sec_num] = final_md
-                    reports[sec_num] = report
-                    add_log(f"✅ Section {num} completed successfully ({report.get('status', 'UNKNOWN')}).")
-                except Exception as e:
-                    add_log(f"❌ Section {num} failed: {e}")
-                    sections_md[num] = f"## {num}. {title}\n\n[Failed to generate due to error: {e}]"
-                    reports[num] = {"status": "FAIL", "error": str(e)}
+            prev_context = ""
+            if prev_texts:
+                prev_context = "PREVIOUSLY GENERATED SECTIONS FOR CONTEXT (Do not repeat details or duplicate acronym definitions, maintain flow):\n\n" + "\n\n".join(prev_texts)
 
-            # Force append the mathematically exact auto-generated Section 11 matrix
-            sections_md[11] = assembler._build_traceability_matrix(canonical)
-            reports[11] = {"status": "PASS", "info": "Auto-generated from frozen requirements"}
+            add_log(f"Section {num} of {n_to_gen}: Starting '{title}'...")
+            log_ph.code("\n".join(st.session_state.logs[-12:]))
 
-        progress_ph.empty()
-        
-        # Save results to session state
-        st.session_state.srs_sections = {f"{num}_sec": md for num, md in sections_md.items()}
-        st.session_state.verification_reports = reports
+            try:
+                # Stage E: Write
+                md = stages.run_stage_e(canonical, num, title, config, add_log, previous_sections_context=prev_context)
+                # Stage F: Audit
+                final_md, report = stages.run_stage_f(canonical, md, num, title, config, add_log, previous_sections_context=prev_context)
 
-        # Assemble full documents
-        proj_name = "Unknown Project"
-        if st.session_state.get("codebase_path"):
-            p_name = Path(st.session_state.codebase_path).name
-            if p_name and p_name != "extracted_codebase":
-                proj_name = p_name
-        if proj_name == "Unknown Project" and st.session_state.get("archive_name"):
-            proj_name = st.session_state.archive_name
-        st.session_state.full_srs_doc = assembler.assemble_srs(sections_md, canonical, proj_name)
-        
-        st.success("🎉 All sections generated and audited successfully! Go to **Preview & Export** tab.")
+                # Save immediately
+                st.session_state.srs_sections[f"{num}_sec"] = final_md
+                if "verification_reports" not in st.session_state:
+                    st.session_state.verification_reports = {}
+                st.session_state.verification_reports[num] = report
+                add_log(f"✅ Section {num} successfully generated.")
+            except Exception as e:
+                add_log(f"❌ Section {num} failed: {e}")
+                st.session_state.srs_sections[f"{num}_sec"] = f"## {num}. {title}\n\n[Failed to generate due to error: {e}]"
+                if "verification_reports" not in st.session_state:
+                    st.session_state.verification_reports = {}
+                st.session_state.verification_reports[num] = {"status": "FAIL", "error": str(e)}
+
+            st.session_state.gen_all_index += 1
+            st.rerun()
+        else:
+            # Complete Section 11 Matrix in Python
+            matrix_md = assembler._build_traceability_matrix(canonical)
+            st.session_state.srs_sections["11_sec"] = matrix_md
+            if "verification_reports" not in st.session_state:
+                st.session_state.verification_reports = {}
+            st.session_state.verification_reports[11] = {"status": "PASS", "info": "Auto-generated from frozen requirements"}
+
+            # Assemble full document
+            proj_name = "Unknown Project"
+            if st.session_state.get("codebase_path"):
+                p_name = Path(st.session_state.codebase_path).name
+                if p_name and p_name != "extracted_codebase":
+                    proj_name = p_name
+            if proj_name == "Unknown Project" and st.session_state.get("archive_name"):
+                proj_name = st.session_state.archive_name
+
+            # Build dict with integer keys for assembler
+            sections_md = {}
+            for k, v in st.session_state.srs_sections.items():
+                if k.endswith("_sec") and v.strip():
+                    try:
+                        n = int(k.split("_")[0])
+                        sections_md[n] = v
+                    except ValueError:
+                        pass
+
+            st.session_state.full_srs_doc = assembler.assemble_srs(sections_md, canonical, proj_name)
+            st.session_state.generating_all = False
+            add_log("🎉 Document generation complete!")
+            st.success("🎉 All sections generated successfully!")
+            st.rerun()
+
+    # Launch generation trigger
+    if gen_all:
+        st.session_state.generating_all = True
+        st.session_state.gen_all_index = 0
+        st.session_state.logs = []
         st.rerun()
 
     # ── Per-section cards ──
@@ -416,10 +406,22 @@ def render_generate_tab(client):
                         final_md = assembler._build_traceability_matrix(canonical)
                         report = {"status": "PASS", "info": "Auto-generated from frozen requirements"}
                     else:
+                        # ── Accumulate context of previous sections ──
+                        prev_texts = []
+                        for p_num in range(1, sec_num):
+                            p_md = st.session_state.srs_sections.get(f"{p_num}_sec", "")
+                            if p_md.strip():
+                                truncated_md = p_md[:3000] + "\n...(truncated for context)..." if len(p_md) > 3000 else p_md
+                                prev_texts.append(f"--- START SECTION {p_num}: {stages.SRS_SECTIONS[p_num-1][1]} ---\n{truncated_md}\n--- END SECTION {p_num} ---")
+
+                        prev_context = ""
+                        if prev_texts:
+                            prev_context = "PREVIOUSLY GENERATED SECTIONS FOR CONTEXT (Do not repeat details or duplicate acronym definitions, maintain flow):\n\n" + "\n\n".join(prev_texts)
+
                         # Stage E: Write
-                        md = stages.run_stage_e(canonical, sec_num, sec_title, config, add_log)
+                        md = stages.run_stage_e(canonical, sec_num, sec_title, config, add_log, previous_sections_context=prev_context)
                         # Stage F: Audit
-                        final_md, report = stages.run_stage_f(canonical, md, sec_num, sec_title, config, add_log)
+                        final_md, report = stages.run_stage_f(canonical, md, sec_num, sec_title, config, add_log, previous_sections_context=prev_context)
                     
                     st.session_state.srs_sections[sec_key] = final_md
                     if "verification_reports" not in st.session_state:
