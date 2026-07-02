@@ -97,6 +97,14 @@ def init_state():
         "architecture":           {},
         "canonical_requirements":  {},
         "verification_reports":   {},
+        # Upload guard — tracks which archive has been processed
+        "processed_archive_id":   None,
+        # Pipeline phase gates
+        "phase_1_complete":       False,
+        "requirements_frozen":    False,
+        # Sequential generation state
+        "generating_all":         False,
+        "gen_all_index":          0,
         # Default to Ollama; switch to Gemini manually via sidebar radio
         "llm_provider":           "ollama",
         "gemini_api_key":         _default_gemini_key,

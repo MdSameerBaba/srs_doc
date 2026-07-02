@@ -44,18 +44,20 @@ def render_generate_tab(client):
         "enable_audit": st.session_state.get("enable_audit", False),
     }
 
-    # Initialize session states if not present
-    if "phase_1_complete" not in st.session_state:
-        st.session_state.phase_1_complete = canonical_path.exists()
-    if "requirements_frozen" not in st.session_state:
-        st.session_state.requirements_frozen = False
-        if canonical_path.exists():
-            import stat
-            try:
-                mode = os.stat(canonical_path).st_mode
-                st.session_state.requirements_frozen = not (mode & stat.S_IWRITE)
-            except Exception:
-                st.session_state.requirements_frozen = False
+    # ── Disk-state recovery after browser refresh ──
+    # If canonical.json exists on disk but session_state was wiped by a refresh,
+    # recover phase_1_complete from the filesystem so the user doesn't have to
+    # re-run stages 1–4.
+    if not st.session_state.phase_1_complete and canonical_path.exists():
+        st.session_state.phase_1_complete = True
+    if not st.session_state.requirements_frozen and canonical_path.exists():
+        import stat
+        try:
+            mode = os.stat(canonical_path).st_mode
+            if not (mode & stat.S_IWRITE):
+                st.session_state.requirements_frozen = True
+        except Exception:
+            pass
 
     # ── Gemini provider guard ──
     if st.session_state.get("llm_provider") == "gemini" and not st.session_state.get("gemini_api_key", "").strip():

@@ -1,13 +1,13 @@
 # tab_upload.py — Tab 1: Upload Project
 
 import streamlit as st
-import shutil
 import os
 import zipfile
 import tarfile
 from pathlib import Path
 from helpers import extract_zip, extract_tar, language_counts, total_size_kb, run_pure_python_extractor
 from pipeline import graph_loader as gl
+
 
 def clear_directory(path: Path):
     """Safely clear a directory handling read-only files on Windows without using deprecated shutil callbacks."""
@@ -29,6 +29,12 @@ def clear_directory(path: Path):
             except Exception:
                 pass
 
+
+def _get_archive_id(archive) -> str:
+    """Create a unique fingerprint for an uploaded file so we can detect new uploads."""
+    return f"{archive.name}::{archive.size}"
+
+
 def render_upload_tab():
     st.markdown("### Upload Your Project Codebase")
     st.info(
@@ -47,90 +53,127 @@ def render_upload_tab():
         )
 
         if archive:
-            with st.spinner("🔍 Extracting, parsing AST symbols, and indexing graph..."):
-                # 1. Memory-based load for backward compatibility with prompt context builder
-                archive.seek(0)
-                loaded = (
-                    extract_zip(archive)
-                    if archive.name.lower().endswith(".zip")
-                    else extract_tar(archive)
-                )
-                
-                # 2. Disk-based extraction for AST graph parser
-                output_dir = Path("srs_output")
-                dest_dir = output_dir / "extracted_codebase"
-                clear_directory(dest_dir)
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                
-                archive.seek(0)
-                try:
-                    if archive.name.lower().endswith(".zip"):
-                        with zipfile.ZipFile(archive, 'r') as zip_ref:
-                            zip_ref.extractall(dest_dir)
-                    else:
-                        with tarfile.open(fileobj=archive, mode="r:*") as tar_ref:
-                            tar_ref.extractall(dest_dir)
-                            
-                    # Resolve single nested directory
-                    contents = list(dest_dir.iterdir())
-                    if len(contents) == 1 and contents[0].is_dir():
-                        codebase_path_resolved = contents[0]
-                    else:
-                        codebase_path_resolved = dest_dir
-                        
-                    # Save resolved path to state
-                    st.session_state.codebase_path = str(codebase_path_resolved.resolve())
-                    
-                    # Run AST extraction
-                    graph_json_path = output_dir / "graph.json"
-                    run_pure_python_extractor(codebase_path_resolved, graph_json_path)
-                    
-                    # Load into SQLite DB
-                    db_path = output_dir / "srs_graph.db"
-                    if db_path.exists():
-                        try:
-                            db_path.unlink()
-                        except Exception:
-                            pass
-                            
-                    stats = gl.load_graph(graph_json_path, db_path)
-                    st.session_state.graph_stats = stats
-                    
-                except Exception as e:
-                    st.error(f"Error parsing codebase graph: {e}")
-                    loaded = None
+            # ── Guard: only process a genuinely NEW upload ──
+            # On every st.rerun(), the file_uploader returns the same file object.
+            # We must NOT re-extract, re-parse, or reset state on reruns.
+            # We only process when the file identity (name + size) changes.
+            current_id = _get_archive_id(archive)
+            already_processed = st.session_state.get("processed_archive_id") == current_id
 
-            if loaded:
-                st.session_state.project_files = loaded
-                st.session_state.srs_sections  = {}
-                st.session_state.archive_name  = Path(archive.name).stem
-                st.session_state.phase_1_complete = False
-                st.session_state.requirements_frozen = False
-                st.markdown(
-                    f'<div class="strip-success">✅ Successfully loaded <strong>{len(loaded)}</strong> '
-                    f'files from <strong>{archive.name}</strong> '
-                    f'({total_size_kb(loaded):.1f} KB total)</div>',
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f'<div class="strip-success">📊 Extracted <strong>{stats["nodes"]}</strong> code nodes '
-                    f'and <strong>{stats["edges"]}</strong> relations in SQLite.</div>',
-                    unsafe_allow_html=True,
-                )
+            if already_processed:
+                # ── Rerun path: just show the cached success message ──
+                if st.session_state.project_files:
+                    files = st.session_state.project_files
+                    stats = st.session_state.get("graph_stats", {})
+                    st.markdown(
+                        f'<div class="strip-success">✅ Successfully loaded <strong>{len(files)}</strong> '
+                        f'files from <strong>{archive.name}</strong> '
+                        f'({total_size_kb(files):.1f} KB total)</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if stats:
+                        st.markdown(
+                            f'<div class="strip-success">📊 Extracted <strong>{stats.get("nodes", 0)}</strong> code nodes '
+                            f'and <strong>{stats.get("edges", 0)}</strong> relations in SQLite.</div>',
+                            unsafe_allow_html=True,
+                        )
             else:
-                st.warning("⚠️ No supported code files found in the archive.")
+                # ── First-time processing: extract, parse, index ──
+                with st.spinner("🔍 Extracting, parsing AST symbols, and indexing graph..."):
+                    # 1. Memory-based load for backward compatibility with prompt context builder
+                    archive.seek(0)
+                    loaded = (
+                        extract_zip(archive)
+                        if archive.name.lower().endswith(".zip")
+                        else extract_tar(archive)
+                    )
+
+                    # 2. Disk-based extraction for AST graph parser
+                    output_dir = Path("srs_output")
+                    dest_dir = output_dir / "extracted_codebase"
+                    clear_directory(dest_dir)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+
+                    stats = {}
+                    archive.seek(0)
+                    try:
+                        if archive.name.lower().endswith(".zip"):
+                            with zipfile.ZipFile(archive, 'r') as zip_ref:
+                                zip_ref.extractall(dest_dir)
+                        else:
+                            with tarfile.open(fileobj=archive, mode="r:*") as tar_ref:
+                                tar_ref.extractall(dest_dir)
+
+                        # Resolve single nested directory
+                        contents = list(dest_dir.iterdir())
+                        if len(contents) == 1 and contents[0].is_dir():
+                            codebase_path_resolved = contents[0]
+                        else:
+                            codebase_path_resolved = dest_dir
+
+                        # Save resolved path to state
+                        st.session_state.codebase_path = str(codebase_path_resolved.resolve())
+
+                        # Run AST extraction
+                        graph_json_path = output_dir / "graph.json"
+                        run_pure_python_extractor(codebase_path_resolved, graph_json_path)
+
+                        # Load into SQLite DB
+                        db_path = output_dir / "srs_graph.db"
+                        if db_path.exists():
+                            try:
+                                db_path.unlink()
+                            except Exception:
+                                pass
+
+                        stats = gl.load_graph(graph_json_path, db_path)
+                        st.session_state.graph_stats = stats
+
+                    except Exception as e:
+                        st.error(f"Error parsing codebase graph: {e}")
+                        loaded = None
+
+                if loaded:
+                    # Save project files and archive identity
+                    st.session_state.project_files = loaded
+                    st.session_state.archive_name = Path(archive.name).stem
+                    st.session_state.processed_archive_id = current_id
+
+                    # Reset downstream pipeline state for a NEW upload only
+                    st.session_state.srs_sections = {}
+                    st.session_state.phase_1_complete = False
+                    st.session_state.requirements_frozen = False
+                    st.session_state.generating_all = False
+                    st.session_state.gen_all_index = 0
+                    st.session_state.verification_reports = {}
+                    st.session_state.full_srs_doc = ""
+
+                    st.markdown(
+                        f'<div class="strip-success">✅ Successfully loaded <strong>{len(loaded)}</strong> '
+                        f'files from <strong>{archive.name}</strong> '
+                        f'({total_size_kb(loaded):.1f} KB total)</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if stats:
+                        st.markdown(
+                            f'<div class="strip-success">📊 Extracted <strong>{stats.get("nodes", 0)}</strong> code nodes '
+                            f'and <strong>{stats.get("edges", 0)}</strong> relations in SQLite.</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.warning("⚠️ No supported code files found in the archive.")
 
     with col_info:
         if st.session_state.project_files:
             files = st.session_state.project_files
             st.markdown("### 📊 Project Analysis")
-            
+
             col_m1, col_m2 = st.columns(2)
             with col_m1:
                 st.metric("Total Files", len(files))
             with col_m2:
                 st.metric("Total Size", f"{total_size_kb(files):.1f} KB")
-                
+
             if st.session_state.graph_stats:
                 col_m3, col_m4 = st.columns(2)
                 with col_m3:
