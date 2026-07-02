@@ -6,7 +6,7 @@ import os
 import traceback
 from pathlib import Path
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from pipeline import stages
 from pipeline import assembler
 from pipeline import ollama_client as _ollama_client
@@ -75,21 +75,6 @@ def render_generate_tab(client):
             "This guarantees 100% traceability and prevents hallucinations."
         )
 
-        st.markdown("#### Concurrency & Engine Override")
-        c_col1, c_col2 = st.columns(2)
-        with c_col1:
-            st.session_state.concurrency = st.slider(
-                "Concurrent Workers (Stage B)",
-                min_value=1, max_value=10,
-                value=st.session_state.get("concurrency", 3),
-                key="tab_concurrency"
-            )
-        with c_col2:
-            st.session_state.current_model = st.text_input(
-                "Heavy Model Override",
-                value=st.session_state.current_model,
-                key="tab_heavy_model_override"
-            )
 
         extract_btn = st.button("🔍 Run Requirements Extraction (Stages 1–4)", type="primary", use_container_width=True)
 
@@ -181,12 +166,15 @@ def render_generate_tab(client):
 
                     st.session_state.phase_1_complete = True
                     add_log("✅ Phase 1 complete — requirements extracted and saved.")
-                    st.rerun()
                 except Exception as e:
                     traceback.print_exc()
                     st.session_state.stage_status[4] = "failed"
                     st.error(f"Stage 4 failed: {e}")
                     return
+
+        # Rerun OUTSIDE the spinner context to cleanly transition to Freeze Gate
+        if st.session_state.phase_1_complete:
+            st.rerun()
         return
 
     # ─────────────────────────────────────────────────────────────
@@ -372,7 +360,10 @@ def render_generate_tab(client):
                     st.session_state.verification_reports = {}
                 st.session_state.verification_reports[num] = {"status": "FAIL", "error": str(e)}
 
-            st.session_state.gen_all_index += 1
+            finally:
+                # Always advance to next section — prevents infinite retry loops
+                st.session_state.gen_all_index += 1
+
             st.rerun()
 
         else:
@@ -406,7 +397,6 @@ def render_generate_tab(client):
             st.session_state.generating_all = False
             add_log("🎉 All sections generated successfully!")
             st.success("🎉 All sections generated! Go to **Preview & Export** to download your SRS.")
-            st.rerun()
 
     # ─────────────────────────────────────────────────────────────
     # SECTION CARDS — show status + inline preview for every section

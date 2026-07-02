@@ -3,7 +3,7 @@
 import io
 import zipfile
 import tarfile
-import random
+
 import ast
 import re
 import json
@@ -13,7 +13,7 @@ from datetime import datetime
 import PyPDF2
 import streamlit as st
 
-from constants import SUPPORTED_EXTENSIONS, SRS_SECTIONS, SECTION_PROMPTS, THINKING_MESSAGES
+from constants import SUPPORTED_EXTENSIONS, SRS_SECTIONS, SECTION_PROMPTS
 
 
 # ─── File readers ─────────────────────────────────────────────────────────────
@@ -164,36 +164,6 @@ CODEBASE (this is the ONLY source of truth — do not use any external knowledge
 Generate the requested SRS section now. Begin directly with the section heading — no preamble:"""
 
 
-# ─── Ollama streaming call ────────────────────────────────────────────────────
-
-def call_ollama_stream(client, prompt: str) -> str:
-    """Show an animated spinner until the first token arrives, then stream live."""
-    model = st.session_state.current_model
-    try:
-        stream = client.chat(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            stream=True,
-            options={
-            "num_ctx":64000,}
-        )
-        spinner_ph = st.empty()
-        def token_gen():
-            first = True
-            for chunk in stream:
-                token = chunk.get("message", {}).get("content", "")
-                if token:
-                    if first:
-                        spinner_ph.empty()
-                        first = False
-                    yield token
-        with spinner_ph:
-            with st.spinner( random.choice(THINKING_MESSAGES)):
-                full = st.write_stream(token_gen())
-        return full or ""
-    except Exception as e:
-        st.error(f"Ollama error: {e}")
-        return ""
 
 
 # ─── Download helpers ─────────────────────────────────────────────────────────

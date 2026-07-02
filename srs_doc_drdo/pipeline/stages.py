@@ -626,12 +626,11 @@ def run_stage_f(
                   "Fix all issues in this regeneration."
             )
             try:
-                section_markdown = str(
-                    ollama.chat(
-                        config["heavy_model"], regen_prompt,
-                        config["ollama_url"], expect_json=False
-                    )
+                raw_regen = ollama.chat(
+                    config["heavy_model"], regen_prompt,
+                    config["ollama_url"], expect_json=False
                 )
+                section_markdown = ollama.clean_llm_output(str(raw_regen))
             except Exception:
                 pass  # keep previous markdown, try verification again
 
