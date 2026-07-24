@@ -81,6 +81,32 @@ RULES:
 - Output ONLY the JSON array — no markdown, no preamble.
 """
 
+_PROMPT_B_FILE = """\
+You are summarizing source code files from a codebase. Describe what each file does based on its content.
+
+INPUT — JSON array of file units:
+{units_json}
+
+OUTPUT (JSON array only, no other text):
+[
+  {{
+    "id": "<exact id from input>",
+    "summary": "<2-4 sentences describing the file's purpose and key functionality>",
+    "side_effects": ["<side effect if any>"],
+    "inputs": ["<key inputs or parameters the file's functions accept>"],
+    "outputs": ["<key outputs or return values the file produces>"]
+  }}
+]
+
+RULES:
+- Output ONE array entry for EACH input file, in the same order.
+- Describe the file's overall purpose, not individual functions.
+- Do NOT guess business intent beyond what the code literally does.
+- If behavior is unclear, set "summary" to "UNCLEAR".
+- Every entry MUST have the exact same "id" as the corresponding input.
+- Output ONLY the JSON array — no markdown, no preamble.
+"""
+
 _PROMPT_C = """\
 You are aggregating function-level summaries into a module-level behavior description.
 
@@ -325,7 +351,7 @@ def run_stage_a(
     )
 
     log(f"Sending to {config['heavy_model']}…")
-    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"])
+    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
     log(f"Architecture snapshot: {len(result.get('modules', []))} modules detected")
     return result
 
@@ -348,13 +374,17 @@ def run_stage_b(
 ) -> list[dict]:
     nodes = gl.get_nodes_for_summarization(db_path)
 
-    # ── Filter trivial nodes (< 4 lines): getters, pass-only, stubs ──
-    def _is_trivial(node: dict) -> bool:
-        ls = node.get("line_start") or 0
-        le = node.get("line_end")   or 0
-        return (le - ls) < 3
+    # ── File-level summarization mode ──
+    if config.get("file_level_summarization", False):
+        nodes = gl.get_file_nodes_for_summarization(db_path)
 
-    nodes = [n for n in nodes if not _is_trivial(n)]
+    # ── Filter trivial nodes (< 4 lines): getters, pass-only, stubs ──
+    if not config.get("file_level_summarization", False):
+        def _is_trivial(node: dict) -> bool:
+            ls = node.get("line_start") or 0
+            le = node.get("line_end")   or 0
+            return (le - ls) < 3
+        nodes = [n for n in nodes if not _is_trivial(n)]
     total = len(nodes)
 
     if total == 0:
@@ -387,18 +417,19 @@ def run_stage_b(
             units.append({
                 "id":        node["id"],
                 "signature": sig,
-                "code":      code[:1500],   # trim per-unit to keep prompt bounded
+                "code":      code[:3000 if config.get("file_level_summarization") else 1500],
                 "calls":     calls[:10],
                 "file":      node["file_path"] or "unknown",
                 "lines":     [node["line_start"] or 0, node["line_end"] or 0],
             })
 
-        prompt = _PROMPT_B.format(units_json=json.dumps(units, indent=2))
+        prompt_template = _PROMPT_B_FILE if config.get("file_level_summarization") else _PROMPT_B
+        prompt = prompt_template.format(units_json=json.dumps(units, indent=2))
 
         summaries: list[dict] = []
         try:
             raw = ollama.chat(
-                config["fast_model"], prompt, config["ollama_url"], expect_json=False
+                config["fast_model"], prompt, config["ollama_url"], expect_json=False, num_ctx=config.get("num_ctx", 64000)
             )
             # Robust extraction of JSON array using balanced bracket parser
             summaries = ollama.extract_json_array(str(raw))
@@ -490,7 +521,7 @@ def run_stage_c(
             edges=json.dumps(edges[:100], indent=2),
         )
         try:
-            res = ollama.chat(config["heavy_model"], prompt, config["ollama_url"])
+            res = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
             if isinstance(res, dict):
                 res["module"] = module
                 gl.save_module_rollup(db_path, res)
@@ -527,7 +558,7 @@ def run_stage_d(
         architecture=json.dumps(architecture, indent=2),
     )
     log(f"Sending to {config['heavy_model']} (this is the FREEZE step)…")
-    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"])
+    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
     frs = result.get("functional_requirements") or []
     nfrs = result.get("non_functional_signals") or []
     fr_count = len(frs)
@@ -561,7 +592,7 @@ def run_stage_e(
         previous_sections_context=previous_sections_context,
         section_instruction=section_instruction
     )
-    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], expect_json=False)
+    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], expect_json=False, num_ctx=config.get("num_ctx", 64000))
     # Strip reasoning blocks / preamble any model may add before the prose
     return ollama.clean_llm_output(str(result))
 
@@ -595,7 +626,7 @@ def run_stage_f(
             section_markdown=section_markdown,
         )
         try:
-            report = ollama.chat(config["heavy_model"], prompt, config["ollama_url"])
+            report = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
         except Exception:
             report = {"status": "PASS", "missing": [], "hallucinated": [],
                       "renamed": [], "uncited_claims": []}
@@ -628,7 +659,7 @@ def run_stage_f(
             try:
                 raw_regen = ollama.chat(
                     config["heavy_model"], regen_prompt,
-                    config["ollama_url"], expect_json=False
+                    config["ollama_url"], expect_json=False, num_ctx=config.get("num_ctx", 64000)
                 )
                 section_markdown = ollama.clean_llm_output(str(raw_regen))
             except Exception:

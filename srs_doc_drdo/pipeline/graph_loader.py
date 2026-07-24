@@ -203,6 +203,24 @@ def get_nodes_for_summarization(db_path: Path) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_file_nodes_for_summarization(db_path: Path) -> list[dict]:
+    """Return file-level nodes for coarse-grained summarization.
+    Each entry represents one source file with aggregated line range."""
+    with _conn(db_path) as c:
+        rows = c.execute(
+            """
+            SELECT n.id, n.label, n.type, n.file_path,
+                   n.line_start, n.line_end, n.docstring
+            FROM   nodes n
+            LEFT   JOIN leaf_summaries ls ON n.id = ls.node_id
+            WHERE  n.type = 'file'
+            AND    ls.node_id IS NULL
+            ORDER  BY n.file_path
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_calls_for_node(db_path: Path, node_id: str) -> list[str]:
     with _conn(db_path) as c:
         rows = c.execute(
@@ -292,28 +310,17 @@ def get_distinct_modules(db_path: Path) -> list[str]:
 
 def get_leaf_summaries_for_module(db_path: Path, module_stem: str) -> list[dict]:
     with _conn(db_path) as c:
+        # Match files that have module_stem with any extension (e.g. /auth.cpp, \auth.h, auth.py, auth)
         rows = c.execute(
             """
             SELECT ls.node_id, ls.summary, ls.side_effects,
                    ls.inputs, ls.outputs, ls.evidence
             FROM   leaf_summaries ls
             JOIN   nodes n ON ls.node_id = n.id
-            WHERE  n.file_path LIKE ? OR n.file_path LIKE ?
+            WHERE  n.file_path LIKE ? OR n.file_path LIKE ? OR n.file_path LIKE ? OR n.file_path = ?
             """,
-            (f"%/{module_stem}.py", f"%\\{module_stem}.py"),
+            (f"%/{module_stem}.%", f"%\\{module_stem}.%", f"{module_stem}.%", module_stem),
         ).fetchall()
-        # Also try bare filename
-        if not rows:
-            rows = c.execute(
-                """
-                SELECT ls.node_id, ls.summary, ls.side_effects,
-                       ls.inputs, ls.outputs, ls.evidence
-                FROM   leaf_summaries ls
-                JOIN   nodes n ON ls.node_id = n.id
-                WHERE  n.file_path LIKE ?
-                """,
-                (f"%{module_stem}%",),
-            ).fetchall()
     return [
         {
             "id":           r["node_id"],
@@ -329,35 +336,21 @@ def get_leaf_summaries_for_module(db_path: Path, module_stem: str) -> list[dict]
 
 def get_intramodule_edges(db_path: Path, module_stem: str) -> list[dict]:
     with _conn(db_path) as c:
-        # Try matching exact python file stems first to prevent false connections between files with similar names
+        # Match edges where both source and target files belong to the module_stem (any extension)
         rows = c.execute(
             """
             SELECT e.source, e.target, e.rel_type
             FROM   edges e
             JOIN   nodes ns ON e.source = ns.id
             JOIN   nodes nt ON e.target = nt.id
-            WHERE  (ns.file_path LIKE ? OR ns.file_path LIKE ? OR ns.file_path = ?)
-            AND    (nt.file_path LIKE ? OR nt.file_path LIKE ? OR nt.file_path = ?)
+            WHERE  (ns.file_path LIKE ? OR ns.file_path LIKE ? OR ns.file_path LIKE ? OR ns.file_path = ?)
+            AND    (nt.file_path LIKE ? OR nt.file_path LIKE ? OR nt.file_path LIKE ? OR nt.file_path = ?)
             """,
             (
-                f"%/{module_stem}.py", f"%\\{module_stem}.py", f"{module_stem}.py",
-                f"%/{module_stem}.py", f"%\\{module_stem}.py", f"{module_stem}.py"
+                f"%/{module_stem}.%", f"%\\{module_stem}.%", f"{module_stem}.%", module_stem,
+                f"%/{module_stem}.%", f"%\\{module_stem}.%", f"{module_stem}.%", module_stem
             ),
         ).fetchall()
-        
-        if not rows:
-            # Fallback to general substring match if no exact python file matches exist
-            rows = c.execute(
-                """
-                SELECT e.source, e.target, e.rel_type
-                FROM   edges e
-                JOIN   nodes ns ON e.source = ns.id
-                JOIN   nodes nt ON e.target = nt.id
-                WHERE  ns.file_path LIKE ?
-                AND    nt.file_path LIKE ?
-                """,
-                (f"%{module_stem}%", f"%{module_stem}%"),
-            ).fetchall()
     return [{"source": r["source"], "target": r["target"], "type": r["rel_type"]} for r in rows]
 
 

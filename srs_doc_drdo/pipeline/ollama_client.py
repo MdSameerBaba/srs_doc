@@ -241,6 +241,7 @@ def chat(
     expect_json: bool = True,
     max_retries: int = 3,
     temperature: float = 0.1,
+    num_ctx: int = 64000,
 ) -> Union[dict, str]:
     """
     Send a chat message to the configured LLM provider (Ollama or Gemini API).
@@ -248,7 +249,7 @@ def chat(
     """
     if PROVIDER == "gemini":
         return _chat_gemini(model, prompt, expect_json, max_retries, temperature)
-    return _chat_ollama(model, prompt, base_url, expect_json, max_retries, temperature)
+    return _chat_ollama(model, prompt, base_url, expect_json, max_retries, temperature, num_ctx)
 
 
 def _chat_gemini(
@@ -302,6 +303,7 @@ def _chat_ollama(
     expect_json: bool = True,
     max_retries: int = 3,
     temperature: float = 0.1,
+    num_ctx: int = 64000,
 ) -> Union[dict, str]:
     """
     Send a request to local Ollama server.
@@ -311,7 +313,7 @@ def _chat_ollama(
         NOTE: Ollama's format=json forces a JSON *object* {}. For stages
         that expect a JSON *array* [], we set expect_json=False and use
         extract_json_array() separately (Stage B).
-      - num_ctx=16384 overrides Ollama's default 2048-token context window.
+      - num_ctx overrides Ollama's default 2048-token context window.
       - All raw content is passed through clean_llm_output() to strip
         reasoning blocks and prose preambles regardless of model.
     """
@@ -321,7 +323,7 @@ def _chat_ollama(
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_ctx": 64000,
+            "num_ctx": num_ctx,
         },
     }
     if expect_json:

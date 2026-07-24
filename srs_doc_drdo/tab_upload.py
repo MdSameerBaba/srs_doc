@@ -5,7 +5,7 @@ import os
 import zipfile
 import tarfile
 from pathlib import Path
-from helpers import extract_zip, extract_tar, language_counts, total_size_kb, run_pure_python_extractor
+from helpers import extract_zip, extract_tar, language_counts, total_size_kb, run_pure_python_extractor, _matches_exclusion
 from pipeline import graph_loader as gl
 
 
@@ -46,6 +46,17 @@ def render_upload_tab():
     col_up, col_info = st.columns([1, 1], gap="large")
 
     with col_up:
+        # ── Exclusion patterns for large codebases ──
+        st.session_state.exclude_patterns = st.text_area(
+            "Exclude Directories / File Patterns (comma-separated)",
+            value=st.session_state.get("exclude_patterns", ""),
+            placeholder="drivers/*, sdk/*, hal/*, FreeRTOS/*, *.log, *.o, *.bin",
+            help="Comma-separated glob patterns to exclude from extraction and analysis. "
+                 "Use this to filter out vendor SDKs, drivers, and build artifacts in large codebases.",
+            key="exclude_patterns_input",
+            height=68,
+        )
+
         archive = st.file_uploader(
             "Project Archive (ZIP / TAR.GZ)",
             type=["zip", "tar", "gz", "tgz"],
@@ -80,12 +91,16 @@ def render_upload_tab():
             else:
                 # ── First-time processing: extract, parse, index ──
                 with st.spinner("🔍 Extracting, parsing AST symbols, and indexing graph..."):
+                    # Parse exclusion patterns from the text area
+                    raw_patterns = st.session_state.get("exclude_patterns", "")
+                    excl_list = [p.strip() for p in raw_patterns.split(",") if p.strip()] if raw_patterns else []
+
                     # 1. Memory-based load for backward compatibility with prompt context builder
                     archive.seek(0)
                     loaded = (
-                        extract_zip(archive)
+                        extract_zip(archive, exclude_patterns=excl_list)
                         if archive.name.lower().endswith(".zip")
-                        else extract_tar(archive)
+                        else extract_tar(archive, exclude_patterns=excl_list)
                     )
 
                     # 2. Disk-based extraction for AST graph parser
@@ -114,9 +129,9 @@ def render_upload_tab():
                         # Save resolved path to state
                         st.session_state.codebase_path = str(codebase_path_resolved.resolve())
 
-                        # Run AST extraction
+                        # Run AST extraction (with exclusion patterns)
                         graph_json_path = output_dir / "graph.json"
-                        run_pure_python_extractor(codebase_path_resolved, graph_json_path)
+                        run_pure_python_extractor(codebase_path_resolved, graph_json_path, exclude_patterns=excl_list)
 
                         # Load into SQLite DB
                         db_path = output_dir / "srs_graph.db"

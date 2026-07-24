@@ -16,6 +16,42 @@ import streamlit as st
 from constants import SUPPORTED_EXTENSIONS, SRS_SECTIONS, SECTION_PROMPTS
 
 
+def _matches_exclusion(rel_path: str, patterns: list[str]) -> bool:
+    """Return True if rel_path matches any exclusion glob pattern (similar to .gitignore)."""
+    if not patterns:
+        return False
+    from fnmatch import fnmatch
+    rel_path_fwd = rel_path.replace("\\", "/").lstrip("/")
+    for pat in patterns:
+        pat = pat.strip()
+        if not pat:
+            continue
+        
+        # Normalize pattern
+        pat_fwd = pat.replace("\\", "/")
+        
+        # Check if the pattern is a root-anchored pattern (starts with /)
+        if pat_fwd.startswith("/"):
+            anchor_pat = pat_fwd[1:]
+            if fnmatch(rel_path_fwd, anchor_pat):
+                return True
+        else:
+            # General pattern: can match anywhere in the path
+            # 1. Match full path directly
+            if fnmatch(rel_path_fwd, pat_fwd):
+                return True
+            # 2. Match as a suffix or nested path (e.g. pat='drivers/*' matches 'src/drivers/gpio.c')
+            if "/" in pat_fwd:
+                if fnmatch(rel_path_fwd, f"*/{pat_fwd}"):
+                    return True
+            else:
+                # If no slash, check any path component
+                for part in Path(rel_path_fwd).parts:
+                    if fnmatch(part, pat_fwd):
+                        return True
+    return False
+
+
 # ─── File readers ─────────────────────────────────────────────────────────────
 
 def read_pdf(data: bytes) -> str:
@@ -39,7 +75,7 @@ def read_file(data: bytes, filename: str) -> str:
 
 # ─── Archive extractors ───────────────────────────────────────────────────────
 
-def extract_zip(fileobj) -> dict[str, str]:
+def extract_zip(fileobj, exclude_patterns: list[str] | None = None) -> dict[str, str]:
     files = {}
     try:
         with zipfile.ZipFile(fileobj, "r") as z:
@@ -49,6 +85,8 @@ def extract_zip(fileobj) -> dict[str, str]:
                 # Skip hidden directories, virtual environments, caches, and outputs
                 parts = Path(entry).parts
                 if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in parts):
+                    continue
+                if _matches_exclusion(entry, exclude_patterns or []):
                     continue
                 if Path(entry).suffix.lower() not in SUPPORTED_EXTENSIONS:
                     continue
@@ -62,7 +100,7 @@ def extract_zip(fileobj) -> dict[str, str]:
         st.error(f"ZIP error: {e}")
     return files
 
-def extract_tar(fileobj) -> dict[str, str]:
+def extract_tar(fileobj, exclude_patterns: list[str] | None = None) -> dict[str, str]:
     files = {}
     try:
         with tarfile.open(fileobj=fileobj, mode="r:*") as t:
@@ -72,6 +110,8 @@ def extract_tar(fileobj) -> dict[str, str]:
                 # Skip hidden directories, virtual environments, caches, and outputs
                 parts = Path(member.name).parts
                 if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in parts):
+                    continue
+                if _matches_exclusion(member.name, exclude_patterns or []):
                     continue
                 if Path(member.name).suffix.lower() not in SUPPORTED_EXTENSIONS:
                     continue
@@ -209,7 +249,7 @@ def download_section(section_key: str, content: str):
 
 # ─── Pure-Python AST & Regex Extractor ────────────────────────────────────────
 
-def extract_codebase_graph(codebase_path: Path) -> dict:
+def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | None = None) -> dict:
     """
     Extracts code classes, functions, and call relationships from a directory
     using only built-in standard libraries (ast for Python, regex for others).
@@ -231,6 +271,8 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
         # Use relative parts only — absolute path may contain 'srs_output' etc.
         rel_parts = path.relative_to(codebase_path).parts
         if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
+            continue
+        if _matches_exclusion(str(path.relative_to(codebase_path)), exclude_patterns or []):
             continue
             
         rel_path = str(path.relative_to(codebase_path))
@@ -329,33 +371,96 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
                 
         # Regex-based parser for non-Python or fallback Python
         if ext != ".py" or not any(n["file_path"] == rel_path and n["type"] == "function" for n in nodes):
-            fn_patterns = [
-                r"\bfunction\s+(\w+)\s*\(", # JS/PHP/Swift
-                r"\bconst\s+(\w+)\s*=\s*(?:\([^)]*\)|[^=]+)\s*=>", # JS/TS arrow functions
-                r"\bdef\s+(\w+)\s*\(", # Python def (fallback)
-                r"\b(?:public|private|protected|static|\s) +[\w<>\s,]+ +(\w+)\s*\([^)]*\)\s*\{" # Java/C++ methods
-            ]
-            
-            lines = content.splitlines()
-            for i, line in enumerate(lines):
-                for pattern in fn_patterns:
-                    m = re.search(pattern, line)
-                    if m:
-                        name = m.group(1)
-                        if name in ["if", "for", "while", "switch", "catch", "return", "class", "import", "export"]:
+            EXTENSION_TO_LANG = {
+                ".py": "python", ".rb": "python", ".scala": "python",
+                ".c": "c_like", ".cpp": "c_like", ".h": "c_like", ".hpp": "c_like",
+                ".java": "c_like", ".cs": "c_like", ".kt": "c_like", ".dart": "c_like",
+                ".php": "c_like", ".swift": "c_like",
+                ".go": "go",
+                ".rs": "rust",
+                ".js": "javascript", ".ts": "javascript", ".jsx": "javascript", ".tsx": "javascript", ".vue": "javascript", ".lua": "javascript",
+                ".sh": "shell", ".bash": "shell", ".zsh": "shell",
+                ".sql": "sql",
+                ".pl": "perl",
+                ".r": "r"
+            }
+
+            LANGUAGE_PATTERNS = {
+                "c_like": [
+                    (r"^[ \t]*(?:(?:inline|static|virtual|const|friend|extern|public|private|protected|final|synchronized|volatile|abstract|void|int|char|float|double|boolean|bool|string|auto|std::\w+|[a-zA-Z_][a-zA-Z0-9_<>\?, ]*)\s+)+[*&]*([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\([^)]*\)\s*(?:\{|;)", "function"),
+                    (r"^[ \t]*([a-zA-Z_][a-zA-Z0-9_]*)::~?\1\s*\([^)]*\)\s*(?:\{|;)", "function"),
+                    (r"^[ \t]*(?:[a-zA-Z_][a-zA-Z0-9_]*::)?~[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)\s*(?:\{|;)", "function"),
+                    (r"^[ \t]*(?:class|struct|interface)\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "class")
+                ],
+                "python": [
+                    (r"^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "function"),
+                    (r"^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "class")
+                ],
+                "go": [
+                    (r"^[ \t]*func\s+(?:\([^)]*\)\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", "function"),
+                    (r"^[ \t]*type\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+struct\b", "class")
+                ],
+                "rust": [
+                    (r"^[ \t]*(?:pub\s+)?(?:unsafe\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "function"),
+                    (r"^[ \t]*(?:pub\s+)?(?:struct|enum|union|trait)\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "class")
+                ],
+                "javascript": [
+                    (r"\bfunction\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", "function"),
+                    (r"\b(?:const|let|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:\([^)]*\)|[a-zA-Z_][a-zA-Z0-9_]*)\s*=>", "function"),
+                    (r"^[ \t]*(?:async\s+)?(?:public|private|protected|static|readonly)?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)\s*\{", "function"),
+                    (r"^[ \t]*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "class")
+                ],
+                "shell": [
+                    (r"^\s*function\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "function"),
+                    (r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*\)\s*\{", "function")
+                ],
+                "sql": [
+                    (r"\b(?:FUNCTION|PROCEDURE)\s+([a-zA-Z_][a-zA-Z0-9_.]*)\b", "function")
+                ],
+                "perl": [
+                    (r"^\s*sub\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "function")
+                ],
+                "r": [
+                    (r"^\s*([a-zA-Z_][a-zA-Z0-9_.]*)\s*(?:<-|=)\s*function\b", "function")
+                ]
+            }
+
+            lang = EXTENSION_TO_LANG.get(ext)
+            if lang and lang in LANGUAGE_PATTERNS:
+                patterns = LANGUAGE_PATTERNS[lang]
+                for pattern_str, node_type in patterns:
+                    flags = re.IGNORECASE if lang == "sql" else 0
+                    flags |= re.MULTILINE
+                    
+                    for m in re.finditer(pattern_str, content, flags=flags):
+                        name = m.group(1) if m.groups() else m.group(0)
+                        if not name:
                             continue
-                        fn_id = f"fn:{rel_path}:{name}"
+                        name = name.strip()
+                        if name in ["if", "for", "while", "switch", "catch", "return", "class", "import", "export", "else", "try", "struct", "enum", "typedef", "union"]:
+                            continue
+                        
+                        start_offset = m.start()
+                        line_start = content[:start_offset].count("\n") + 1
+                        
+                        fn_id = f"{node_type}:{rel_path}:{name}"
+                        
+                        if any(n["id"] == fn_id for n in nodes):
+                            continue
+                            
                         nodes.append({
                             "id": fn_id,
                             "label": name,
-                            "type": "function",
+                            "type": node_type,
                             "file_path": rel_path,
-                            "line_start": i + 1,
-                            "line_end": i + 1,
+                            "line_start": line_start,
+                            "line_end": line_start,
                             "docstring": ""
                         })
-                        func_name_to_ids[name] = func_name_to_ids.get(name, []) + [fn_id]
-                        break
+                        if node_type == "class":
+                            class_name_to_ids[name] = fn_id
+                        else:
+                            func_name_to_ids[name] = func_name_to_ids.get(name, []) + [fn_id]
                         
     # 2. Resolve explicit AST call edges
     for src_id, dest_name in temp_calls:
@@ -378,6 +483,8 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
             continue
         rel_parts = path.relative_to(codebase_path).parts
         if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
+            continue
+        if _matches_exclusion(str(path.relative_to(codebase_path)), exclude_patterns or []):
             continue
         rel_path = str(path.relative_to(codebase_path))
         ext = path.suffix.lower()
@@ -421,6 +528,8 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
         rel_parts = path.relative_to(codebase_path).parts
         if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
             continue
+        if _matches_exclusion(str(path.relative_to(codebase_path)), exclude_patterns or []):
+            continue
         rel_path = str(path.relative_to(codebase_path))
         if path.suffix.lower() in SUPPORTED_EXTENSIONS:
             file_id = f"file:{rel_path}"
@@ -445,9 +554,9 @@ def extract_codebase_graph(codebase_path: Path) -> dict:
     return {"nodes": nodes, "links": links}
 
 
-def run_pure_python_extractor(codebase_path: Path, output_json_path: Path):
+def run_pure_python_extractor(codebase_path: Path, output_json_path: Path, exclude_patterns: list[str] | None = None):
     """Generates the graph dictionary and writes it to a file, mimicking graphifyy's output."""
-    graph = extract_codebase_graph(codebase_path)
+    graph = extract_codebase_graph(codebase_path, exclude_patterns)
     output_json_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(graph, f, indent=2)

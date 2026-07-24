@@ -42,6 +42,8 @@ def render_generate_tab(client):
         "ollama_url":  st.session_state.ollama_host,
         "concurrency": st.session_state.get("concurrency", 3),
         "enable_audit": st.session_state.get("enable_audit", False),
+        "num_ctx":     st.session_state.get("num_ctx", 64000),
+        "file_level_summarization": st.session_state.get("file_level_summarization", False),
     }
 
     # ── Disk-state recovery after browser refresh ──

@@ -109,6 +109,10 @@ def init_state():
         "llm_provider":           "ollama",
         "gemini_api_key":         _default_gemini_key,
         "enable_audit":           False,
+        # Scaling controls for large codebases
+        "exclude_patterns":       "",
+        "num_ctx":                64000,
+        "file_level_summarization": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -202,13 +206,31 @@ with st.sidebar:
         key="concurrency_slider"
     )
 
+    st.markdown("---")
+    st.markdown("### 🔧 Large Codebase Settings")
+
+    st.session_state.num_ctx = st.select_slider(
+        "LLM Context Window (tokens)",
+        options=[8192, 16384, 32768, 64000, 128000, 256000, 300000],
+        value=st.session_state.num_ctx,
+        help="Controls the num_ctx parameter sent to Ollama. Lower values use less VRAM but may truncate large prompts. Set this based on your server's GPU memory.",
+        key="num_ctx_slider"
+    )
+
+    st.session_state.file_level_summarization = st.toggle(
+        "File-Level Summarization (for large codebases)",
+        value=st.session_state.file_level_summarization,
+        help="Summarizes entire files instead of individual functions. Reduces LLM calls by 10x for codebases with thousands of functions.",
+        key="file_level_toggle"
+    )
+
     st.session_state.enable_audit = st.toggle(
         "Enable Traceability Audit (Stage F)",
         value=st.session_state.enable_audit,
         help="Audits generated sections against requirements. Disabling this speeds up generation by 3x by bypassing self-correction loops.",
         key="enable_audit_toggle"
     )
-    
+
     st.markdown("---")
 
 # ─── Header ───────────────────────────────────────────────────────────────────
