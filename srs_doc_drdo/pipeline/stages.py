@@ -381,9 +381,14 @@ def run_stage_b(
     # ── Filter trivial nodes (< 4 lines): getters, pass-only, stubs ──
     if not config.get("file_level_summarization", False):
         def _is_trivial(node: dict) -> bool:
+            fp = (node.get("file_path") or "").lower()
+            if fp.endswith(".h") or fp.endswith(".hpp"):
+                return False
             ls = node.get("line_start") or 0
             le = node.get("line_end")   or 0
-            return (le - ls) < 3
+            if le == ls:
+                return False
+            return (le - ls) < 1
         nodes = [n for n in nodes if not _is_trivial(n)]
     total = len(nodes)
 

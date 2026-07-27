@@ -247,7 +247,77 @@ def download_section(section_key: str, content: str):
     )
 
 
-# ─── Pure-Python AST & Regex Extractor ────────────────────────────────────────
+def _find_closing_brace_line(content: str, start_index: int, start_line: int) -> int:
+    """Find the line number of the matching closing brace '}' starting after start_index."""
+    brace_start = content.find("{", start_index)
+    if brace_start == -1:
+        return start_line
+    
+    # If brace_start is too far from start_index (e.g. > 300 chars, likely prototype), return start_line
+    if brace_start - start_index > 300:
+        return start_line
+        
+    depth = 0
+    in_string = False
+    string_char = ''
+    in_line_comment = False
+    in_block_comment = False
+    
+    i = brace_start
+    length = len(content)
+    
+    while i < length:
+        ch = content[i]
+        
+        if in_line_comment:
+            if ch == '\n':
+                in_line_comment = False
+            i += 1
+            continue
+            
+        if in_block_comment:
+            if ch == '*' and i + 1 < length and content[i+1] == '/':
+                in_block_comment = False
+                i += 2
+                continue
+            i += 1
+            continue
+            
+        if in_string:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == string_char:
+                in_string = False
+            i += 1
+            continue
+            
+        if ch == '/' and i + 1 < length:
+            if content[i+1] == '/':
+                in_line_comment = True
+                i += 2
+                continue
+            elif content[i+1] == '*':
+                in_block_comment = True
+                i += 2
+                continue
+                
+        if ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+            i += 1
+            continue
+            
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return content[:i].count("\n") + 1
+        i += 1
+        
+    return content[:i].count("\n") + 1
+
 
 def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | None = None) -> dict:
     """
@@ -258,17 +328,21 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
     nodes = []
     links = []
     
-    # Map function and class names to their node IDs to resolve call relationships
     func_name_to_ids = {}
     class_name_to_ids = {}
-    temp_calls = [] # List of tuples: (caller_fn_id, called_fn_name)
+    temp_calls = []
+
+    CODE_EXTS = {
+        ".py", ".c", ".cpp", ".h", ".hpp", ".java", ".cs", ".js", ".ts",
+        ".jsx", ".tsx", ".vue", ".go", ".rs", ".swift", ".kt", ".dart",
+        ".php", ".rb", ".pl", ".lua", ".r", ".scala", ".sh", ".bash", ".zsh", ".sql"
+    }
     
     # 1. Walk the directory and extract nodes
     for path in Path(codebase_path).rglob("*"):
         if not path.is_file():
             continue
         # Skip hidden directories, virtual environments, and caches
-        # Use relative parts only — absolute path may contain 'srs_output' etc.
         rel_parts = path.relative_to(codebase_path).parts
         if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
             continue
@@ -279,7 +353,7 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
         ext = path.suffix.lower()
         
         # Only parse supported code files
-        if ext not in SUPPORTED_EXTENSIONS:
+        if ext not in CODE_EXTS:
             continue
             
         try:
@@ -366,7 +440,6 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
                 visitor.visit(tree)
                 
             except Exception:
-                # Fallback to regex if AST parsing fails (e.g. syntax error in file)
                 pass
                 
         # Regex-based parser for non-Python or fallback Python
@@ -387,9 +460,9 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
 
             LANGUAGE_PATTERNS = {
                 "c_like": [
-                    (r"^[ \t]*(?:(?:inline|static|virtual|const|friend|extern|public|private|protected|final|synchronized|volatile|abstract|void|int|char|float|double|boolean|bool|string|auto|std::\w+|[a-zA-Z_][a-zA-Z0-9_<>\?, ]*)\s+)+[*&]*([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\([^)]*\)\s*(?:\{|;)", "function"),
-                    (r"^[ \t]*([a-zA-Z_][a-zA-Z0-9_]*)::~?\1\s*\([^)]*\)\s*(?:\{|;)", "function"),
-                    (r"^[ \t]*(?:[a-zA-Z_][a-zA-Z0-9_]*::)?~[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)\s*(?:\{|;)", "function"),
+                    (r"^[ \t]*(?:(?:\b(?:static|inline|virtual|const|friend|extern|public|private|protected|final|synchronized|volatile|abstract|unsigned|signed|struct|enum|void|int|char|float|double|boolean|bool|string|auto|size_t|uint\d+_t|int\d+_t)\b|[a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*(?:<[^>\n]+>)?)\s+)+[*&]*([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\([^)]*\)(?:[^{;\n]|/\*.*?\*/|//.*?\n)*?(?:\{|;)", "function"),
+                    (r"^[ \t]*([a-zA-Z_][a-zA-Z0-9_]*)::~?\1\s*\([^)]*\)(?:[^{;\n]|/\*.*?\*/|//.*?\n)*?(?:\{|;)", "function"),
+                    (r"^[ \t]*(?:[a-zA-Z_][a-zA-Z0-9_]*::)?~[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)(?:[^{;\n]|/\*.*?\*/|//.*?\n)*?(?:\{|;)", "function"),
                     (r"^[ \t]*(?:class|struct|interface)\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "class")
                 ],
                 "python": [
@@ -442,6 +515,7 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
                         
                         start_offset = m.start()
                         line_start = content[:start_offset].count("\n") + 1
+                        line_end = _find_closing_brace_line(content, m.start(), line_start) if node_type == "function" else line_start
                         
                         fn_id = f"{node_type}:{rel_path}:{name}"
                         
@@ -454,7 +528,7 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
                             "type": node_type,
                             "file_path": rel_path,
                             "line_start": line_start,
-                            "line_end": line_start,
+                            "line_end": line_end,
                             "docstring": ""
                         })
                         if node_type == "class":
