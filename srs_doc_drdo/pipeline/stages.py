@@ -179,11 +179,11 @@ OUTPUT (JSON only, no other text):
 }}
 
 RULES:
-- Extract all explicit acronyms, protocol abbreviations, and technical terms present in the codebase.
+- Extract an acronym ONLY if there is EXPLICIT EVIDENCE in the codebase, comments, docstrings, README, or documentation files defining or expanding it.
+- STRICTLY PROHIBITED: Do NOT guess, infer, hallucinate, or use external context to fabricate definitions for acronyms. If an acronym is not explicitly defined or expanded in the codebase, return an empty array "acronyms": [].
 - Extract all reference documents, toolchain build specs (e.g. .prj, .spec, Makefile, CMakeLists.txt, package.json), standards, and declared libraries as reference_documents.
 - Every FR must have at least one evidence_id. No evidence = omit.
-- Do NOT infer NFRs from absence of code. Only from explicit evidence
-  (rate limiters, auth middleware, encryption calls, retry logic, etc.)
+- Do NOT infer NFRs from absence of code. Only from explicit evidence.
 - Mark confidence LOW if extraction required any inference.
 - Be conservative — under-extraction is safer than hallucination.
 """

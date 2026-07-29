@@ -142,12 +142,12 @@ Generate ONLY Section 2 — Acronyms and Abbreviations of the SRS.
 
 STRICT RULES:
 {_NO_CODE_RULE}
-- Populate Section 2 using the "acronyms" array present in the canonical requirements.
+- Include an acronym ONLY if it is present in the "acronyms" array of the canonical requirements with explicit evidence from the project files.
+- STRICTLY PROHIBITED: Do NOT invent, guess, infer, or use external context/training knowledge to expand any acronyms. Only display acronyms that have explicit evidence in the canonical input.
 - Format as a Markdown table with columns:
   | Acronym | Full Form / Definition | Where Found |
 - Sort rows alphabetically by Acronym.
-- Do NOT invent acronyms not present in the canonical requirements.
-- If the acronyms list is empty, write: "No explicit acronyms or abbreviations were defined in the project files."
+- If the acronyms list in the canonical requirements is empty, write exactly: "No explicit acronyms or abbreviations are defined in the provided project files." and do NOT generate a table.
 """,
 
     "3_reference_documents": f"""
