@@ -1,19 +1,26 @@
 # constants.py — static data: file extensions, SRS sections, prompts, thinking messages
 
 SUPPORTED_EXTENSIONS: dict[str, str] = {
-    ".py": "Python", ".c": "C", ".cpp": "C++", ".h": "C/C++ Header",
-    ".hpp": "C++ Header", ".java": "Java", ".cs": "C#",
-    ".js": "JavaScript", ".ts": "TypeScript", ".jsx": "React JSX",
-    ".tsx": "React TSX", ".vue": "Vue", ".html": "HTML", ".css": "CSS",
+    ".c": "C", ".h": "C/C++ Header", ".cpp": "C++", ".hpp": "C++ Header",
+    ".cc": "C++", ".py": "Python", ".tcl": "TCL Script",
+    ".txt": "Text", ".md": "Markdown", ".prj": "Project File",
+    ".spec": "Spec File", ".json": "JSON", ".html": "HTML",
+    ".java": "Java", ".cs": "C#", ".js": "JavaScript", ".ts": "TypeScript",
+    ".jsx": "React JSX", ".tsx": "React TSX", ".vue": "Vue", ".css": "CSS",
     ".scss": "SCSS", ".go": "Go", ".rs": "Rust", ".swift": "Swift",
     ".kt": "Kotlin", ".dart": "Dart", ".php": "PHP", ".rb": "Ruby",
     ".pl": "Perl", ".lua": "Lua", ".r": "R", ".scala": "Scala",
-    ".m": "MATLAB/Obj-C", ".json": "JSON", ".xml": "XML",
-    ".yaml": "YAML", ".yml": "YAML", ".toml": "TOML", ".ini": "INI",
-    ".cfg": "Config", ".env": "Env", ".sh": "Shell", ".bash": "Bash",
-    ".zsh": "Zsh", ".ps1": "PowerShell", ".md": "Markdown",
-    ".txt": "Text", ".sql": "SQL", ".pdf": "PDF", ".csv": "CSV",
+    ".m": "MATLAB/Obj-C", ".xml": "XML", ".yaml": "YAML", ".yml": "YAML",
+    ".toml": "TOML", ".ini": "INI", ".cfg": "Config", ".env": "Env",
+    ".sh": "Shell", ".bash": "Bash", ".zsh": "Zsh", ".ps1": "PowerShell",
+    ".sql": "SQL", ".pdf": "PDF", ".csv": "CSV",
 }
+
+# User's default inclusion set: .tcl .cc .c .h .cpp .hpp .txt .md .prj .spec .json .html and .py
+DEFAULT_INCLUDED_EXTENSIONS: list[str] = [
+    ".c", ".h", ".cpp", ".hpp", ".cc", ".py", ".tcl",
+    ".txt", ".md", ".prj", ".spec", ".json", ".html"
+]
 
 SRS_SECTIONS = {
     "1_introduction": {

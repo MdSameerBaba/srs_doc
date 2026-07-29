@@ -76,6 +76,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+from constants import DEFAULT_INCLUDED_EXTENSIONS
+
 # ─── Session State ────────────────────────────────────────────────────────────
 _default_gemini_key = st.secrets.get("gemini_api_key", "")
 
@@ -110,7 +112,7 @@ def init_state():
         "gemini_api_key":         _default_gemini_key,
         "enable_audit":           False,
         # Scaling controls for large codebases
-        "exclude_patterns":       "",
+        "include_extensions":     DEFAULT_INCLUDED_EXTENSIONS,
         "num_ctx":                64000,
         "file_level_summarization": False,
     }

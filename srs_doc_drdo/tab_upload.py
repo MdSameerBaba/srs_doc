@@ -5,7 +5,8 @@ import os
 import zipfile
 import tarfile
 from pathlib import Path
-from helpers import extract_zip, extract_tar, language_counts, total_size_kb, run_pure_python_extractor, _matches_exclusion
+from helpers import extract_zip, extract_tar, language_counts, total_size_kb, run_pure_python_extractor
+from constants import SUPPORTED_EXTENSIONS, DEFAULT_INCLUDED_EXTENSIONS
 from pipeline import graph_loader as gl
 
 
@@ -46,15 +47,18 @@ def render_upload_tab():
     col_up, col_info = st.columns([1, 1], gap="large")
 
     with col_up:
-        # ── Exclusion patterns for large codebases ──
-        st.session_state.exclude_patterns = st.text_area(
-            "Exclude Directories / File Patterns (comma-separated)",
-            value=st.session_state.get("exclude_patterns", ""),
-            placeholder="drivers/*, sdk/*, hal/*, FreeRTOS/*, *.log, *.o, *.bin",
-            help="Comma-separated glob patterns to exclude from extraction and analysis. "
-                 "Use this to filter out vendor SDKs, drivers, and build artifacts in large codebases.",
-            key="exclude_patterns_input",
-            height=68,
+        # ── Extension Multi-Select Dropdown Option Menu ──
+        all_ext_options = sorted(list(SUPPORTED_EXTENSIONS.keys()))
+        default_selected = [ext for ext in DEFAULT_INCLUDED_EXTENSIONS if ext in SUPPORTED_EXTENSIONS]
+
+        st.session_state.include_extensions = st.multiselect(
+            "Select File Types / Extensions to Include",
+            options=all_ext_options,
+            default=st.session_state.get("include_extensions", default_selected),
+            format_func=lambda ext: f"{ext}  ({SUPPORTED_EXTENSIONS.get(ext, ext)})",
+            help="Select which file extensions to include in the analysis. "
+                 "The defaults cover C/C++, Python, TCL scripts, Project files, Specs, and Docs.",
+            key="include_extensions_multiselect",
         )
 
         archive = st.file_uploader(
@@ -91,16 +95,14 @@ def render_upload_tab():
             else:
                 # ── First-time processing: extract, parse, index ──
                 with st.spinner("🔍 Extracting, parsing AST symbols, and indexing graph..."):
-                    # Parse exclusion patterns from the text area
-                    raw_patterns = st.session_state.get("exclude_patterns", "")
-                    excl_list = [p.strip() for p in raw_patterns.split(",") if p.strip()] if raw_patterns else []
+                    incl_list = st.session_state.get("include_extensions", default_selected)
 
                     # 1. Memory-based load for backward compatibility with prompt context builder
                     archive.seek(0)
                     loaded = (
-                        extract_zip(archive, exclude_patterns=excl_list)
+                        extract_zip(archive, include_extensions=incl_list)
                         if archive.name.lower().endswith(".zip")
-                        else extract_tar(archive, exclude_patterns=excl_list)
+                        else extract_tar(archive, include_extensions=incl_list)
                     )
 
                     # 2. Disk-based extraction for AST graph parser
@@ -129,9 +131,9 @@ def render_upload_tab():
                         # Save resolved path to state
                         st.session_state.codebase_path = str(codebase_path_resolved.resolve())
 
-                        # Run AST extraction (with exclusion patterns)
+                        # Run AST extraction (with selected inclusion extensions)
                         graph_json_path = output_dir / "graph.json"
-                        run_pure_python_extractor(codebase_path_resolved, graph_json_path, exclude_patterns=excl_list)
+                        run_pure_python_extractor(codebase_path_resolved, graph_json_path, include_extensions=incl_list)
 
                         # Load into SQLite DB
                         db_path = output_dir / "srs_graph.db"

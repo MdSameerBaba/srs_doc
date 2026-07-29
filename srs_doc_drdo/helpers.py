@@ -75,8 +75,9 @@ def read_file(data: bytes, filename: str) -> str:
 
 # ─── Archive extractors ───────────────────────────────────────────────────────
 
-def extract_zip(fileobj, exclude_patterns: list[str] | None = None) -> dict[str, str]:
+def extract_zip(fileobj, include_extensions: list[str] | None = None) -> dict[str, str]:
     files = {}
+    allowed_exts = set(ext.lower() for ext in include_extensions) if include_extensions else set(SUPPORTED_EXTENSIONS.keys())
     try:
         with zipfile.ZipFile(fileobj, "r") as z:
             for entry in z.namelist():
@@ -86,9 +87,7 @@ def extract_zip(fileobj, exclude_patterns: list[str] | None = None) -> dict[str,
                 parts = Path(entry).parts
                 if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in parts):
                     continue
-                if _matches_exclusion(entry, exclude_patterns or []):
-                    continue
-                if Path(entry).suffix.lower() not in SUPPORTED_EXTENSIONS:
+                if Path(entry).suffix.lower() not in allowed_exts:
                     continue
                 try:
                     content = read_file(z.read(entry), entry)
@@ -100,8 +99,9 @@ def extract_zip(fileobj, exclude_patterns: list[str] | None = None) -> dict[str,
         st.error(f"ZIP error: {e}")
     return files
 
-def extract_tar(fileobj, exclude_patterns: list[str] | None = None) -> dict[str, str]:
+def extract_tar(fileobj, include_extensions: list[str] | None = None) -> dict[str, str]:
     files = {}
+    allowed_exts = set(ext.lower() for ext in include_extensions) if include_extensions else set(SUPPORTED_EXTENSIONS.keys())
     try:
         with tarfile.open(fileobj=fileobj, mode="r:*") as t:
             for member in t.getmembers():
@@ -111,9 +111,7 @@ def extract_tar(fileobj, exclude_patterns: list[str] | None = None) -> dict[str,
                 parts = Path(member.name).parts
                 if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in parts):
                     continue
-                if _matches_exclusion(member.name, exclude_patterns or []):
-                    continue
-                if Path(member.name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+                if Path(member.name).suffix.lower() not in allowed_exts:
                     continue
                 try:
                     f = t.extractfile(member)
@@ -313,13 +311,22 @@ def _find_closing_brace_line(content: str, start_index: int, start_line: int) ->
         elif ch == '}':
             depth -= 1
             if depth == 0:
+                # Check if there is a body brace '{' following (e.g. TCL proc name {args} {body})
+                remaining = content[i + 1:].lstrip()
+                if remaining.startswith("{"):
+                    next_brace = content.find("{", i + 1)
+                    if next_brace != -1 and (next_brace - i) < 50:
+                        i = next_brace
+                        depth = 1
+                        i += 1
+                        continue
                 return content[:i].count("\n") + 1
         i += 1
         
     return content[:i].count("\n") + 1
 
 
-def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | None = None) -> dict:
+def extract_codebase_graph(codebase_path: Path, include_extensions: list[str] | None = None) -> dict:
     """
     Extracts code classes, functions, and call relationships from a directory
     using only built-in standard libraries (ast for Python, regex for others).
@@ -332,11 +339,7 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
     class_name_to_ids = {}
     temp_calls = []
 
-    CODE_EXTS = {
-        ".py", ".c", ".cpp", ".h", ".hpp", ".java", ".cs", ".js", ".ts",
-        ".jsx", ".tsx", ".vue", ".go", ".rs", ".swift", ".kt", ".dart",
-        ".php", ".rb", ".pl", ".lua", ".r", ".scala", ".sh", ".bash", ".zsh", ".sql"
-    }
+    allowed_exts = set(ext.lower() for ext in include_extensions) if include_extensions else set(SUPPORTED_EXTENSIONS.keys())
     
     # 1. Walk the directory and extract nodes
     for path in Path(codebase_path).rglob("*"):
@@ -346,14 +349,12 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
         rel_parts = path.relative_to(codebase_path).parts
         if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
             continue
-        if _matches_exclusion(str(path.relative_to(codebase_path)), exclude_patterns or []):
-            continue
             
         rel_path = str(path.relative_to(codebase_path))
         ext = path.suffix.lower()
         
-        # Only parse supported code files
-        if ext not in CODE_EXTS:
+        # Only parse allowed extensions
+        if ext not in allowed_exts:
             continue
             
         try:
@@ -446,7 +447,7 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
         if ext != ".py" or not any(n["file_path"] == rel_path and n["type"] == "function" for n in nodes):
             EXTENSION_TO_LANG = {
                 ".py": "python", ".rb": "python", ".scala": "python",
-                ".c": "c_like", ".cpp": "c_like", ".h": "c_like", ".hpp": "c_like",
+                ".c": "c_like", ".cpp": "c_like", ".cc": "c_like", ".h": "c_like", ".hpp": "c_like",
                 ".java": "c_like", ".cs": "c_like", ".kt": "c_like", ".dart": "c_like",
                 ".php": "c_like", ".swift": "c_like",
                 ".go": "go",
@@ -455,7 +456,8 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
                 ".sh": "shell", ".bash": "shell", ".zsh": "shell",
                 ".sql": "sql",
                 ".pl": "perl",
-                ".r": "r"
+                ".r": "r",
+                ".tcl": "tcl"
             }
 
             LANGUAGE_PATTERNS = {
@@ -468,6 +470,9 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
                 "python": [
                     (r"^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "function"),
                     (r"^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", "class")
+                ],
+                "tcl": [
+                    (r"^[ \t]*proc\s+([a-zA-Z_][a-zA-Z0-9_:]*)\b", "function")
                 ],
                 "go": [
                     (r"^[ \t]*func\s+(?:\([^)]*\)\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", "function"),
@@ -549,7 +554,6 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
                 })
                 
     # 3. Scan for name matching to build cross-references (implicit calls)
-    # Build a set of existing (source, target) pairs for O(1) duplicate detection
     edge_set: set[tuple[str, str]] = {(l["source"], l["target"]) for l in links}
 
     for path in Path(codebase_path).rglob("*"):
@@ -558,11 +562,9 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
         rel_parts = path.relative_to(codebase_path).parts
         if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
             continue
-        if _matches_exclusion(str(path.relative_to(codebase_path)), exclude_patterns or []):
-            continue
         rel_path = str(path.relative_to(codebase_path))
         ext = path.suffix.lower()
-        if ext not in SUPPORTED_EXTENSIONS:
+        if ext not in allowed_exts:
             continue
             
         try:
@@ -576,7 +578,6 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
             continue
 
         # Check if this file references any function name from the codebase
-        # Find all words followed by '(' in the content to lookup in O(1)
         called_names = set(re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", content))
         for func_name in called_names:
             if func_name in func_name_to_ids:
@@ -602,13 +603,11 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
         rel_parts = path.relative_to(codebase_path).parts
         if any(part.startswith(".") or part in ["__pycache__", "node_modules", ".venv", "venv", "srs_output", "graphify-out"] for part in rel_parts):
             continue
-        if _matches_exclusion(str(path.relative_to(codebase_path)), exclude_patterns or []):
-            continue
         rel_path = str(path.relative_to(codebase_path))
-        if path.suffix.lower() in SUPPORTED_EXTENSIONS:
+        ext = path.suffix.lower()
+        if ext in allowed_exts:
             file_id = f"file:{rel_path}"
             
-            # Count file lines
             try:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
                     line_count = sum(1 for _ in f)
@@ -628,9 +627,9 @@ def extract_codebase_graph(codebase_path: Path, exclude_patterns: list[str] | No
     return {"nodes": nodes, "links": links}
 
 
-def run_pure_python_extractor(codebase_path: Path, output_json_path: Path, exclude_patterns: list[str] | None = None):
+def run_pure_python_extractor(codebase_path: Path, output_json_path: Path, include_extensions: list[str] | None = None):
     """Generates the graph dictionary and writes it to a file, mimicking graphifyy's output."""
-    graph = extract_codebase_graph(codebase_path, exclude_patterns)
+    graph = extract_codebase_graph(codebase_path, include_extensions)
     output_json_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(graph, f, indent=2)
