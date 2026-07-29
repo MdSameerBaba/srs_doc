@@ -138,30 +138,29 @@ Format: Markdown with numbered headings. No code.
 """,
 
     "2_acronyms": f"""
-Generate ONLY Section 2 — Acronyms and Abbreviations.
+Generate ONLY Section 2 — Acronyms and Abbreviations of the SRS.
 
 STRICT RULES:
 {_NO_CODE_RULE}
-- Include an acronym ONLY if the project files EXPLICITLY define, spell out, or explain its meaning — for example, a comment that says "API (Application Programming Interface)", a README that explains a term, or a docstring that defines it.
-- An acronym merely appearing as a substring inside a variable name, function name, method name, or file name (e.g., the letters "ISO" inside "isoformat", or "CLI" inside a file path) is NOT a definition. Do NOT include such tokens in this table, and do NOT use your own general knowledge to guess what they might stand for, even if you recognize the term from common usage.
-- Do NOT pad the list with generic industry acronyms not found in this project.
-- If you are not at least certain the project files themselves state the expansion, omit the row entirely rather than including it with a guessed definition.
-- It is normal and expected for this table to be short or even empty. An empty or near-empty table is correct if the project does not explicitly define any acronyms — do not stretch to fill rows.
-
-Format: Markdown table with columns — Acronym | Full Form / Definition | Where Found.
-Sort alphabetically. If no acronyms are explicitly defined anywhere in the project, write exactly: "No acronyms or abbreviations are explicitly defined in the provided project files." and do not produce a table.
+- Populate Section 2 using the "acronyms" array present in the canonical requirements.
+- Format as a Markdown table with columns:
+  | Acronym | Full Form / Definition | Where Found |
+- Sort rows alphabetically by Acronym.
+- Do NOT invent acronyms not present in the canonical requirements.
+- If the acronyms list is empty, write: "No explicit acronyms or abbreviations were defined in the project files."
 """,
 
     "3_reference_documents": f"""
-Generate ONLY Section 3 — Reference Documents.
+Generate ONLY Section 3 — Reference Documents of the SRS.
 
 STRICT RULES:
 {_NO_CODE_RULE}
-- List ONLY libraries, frameworks, standards, and external services that are explicitly referenced in the project (dependency declaration files such as requirements.txt, package.json, pom.xml, go.mod; configuration files; README).
-- Do NOT add IEEE/ISO standards or external documentation unless they are explicitly referenced in the project files.
-- Do NOT invent version numbers or URLs not present in the project files.
-
-Format: Markdown table — # | Name | Purpose | Version / Source (as declared in project). No code.
+- Populate Section 3 using the "reference_documents" array present in the canonical requirements.
+- Include all build specifications, project configuration files, toolchain specs (.prj, .spec, Makefile, CMakeLists.txt, package.json), standards, protocols, and third-party libraries.
+- Format as a Markdown table with columns:
+  | # | Reference Document / Specification | Purpose | Version / Source File |
+- Do NOT invent documents or version numbers not present in the canonical requirements.
+- If the reference_documents list is empty, write: "No explicit reference documents or external specifications were declared in the project files."
 """,
 
     "4_product_description": f"""

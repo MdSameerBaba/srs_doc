@@ -131,7 +131,7 @@ RULES:
 """
 
 _PROMPT_D = """\
-You are extracting functional requirements from verified module summaries.
+You are extracting functional requirements, acronyms, reference documents/specifications, and non-functional signals from verified module summaries.
 This output becomes the FROZEN canonical source for all SRS generation.
 
 INPUT — Module rollups:
@@ -143,6 +143,21 @@ INPUT — Architecture snapshot:
 OUTPUT (JSON only, no other text):
 {{
   "actors": [{{"name": "...", "evidence_ids": [...]}}],
+  "acronyms": [
+    {{
+      "acronym": "<acronym or protocol abbreviation, e.g. DMA, RTOS, PCIe, FIFO, UART, GPIO, API, ISR, VHDL, FPGA, CRC, AES>",
+      "definition": "<expanded name and plain English definition derived from code/comments/docs>",
+      "where_found": "<file or module name where found>"
+    }}
+  ],
+  "reference_documents": [
+    {{
+      "id": "REF-1",
+      "name": "<name of reference document, standard, library, toolchain spec, build spec, or configuration file>",
+      "purpose": "<purpose of the reference document or specification>",
+      "version_or_source": "<version, file name, or source declared in project>"
+    }}
+  ],
   "functional_requirements": [
     {{
       "id": "FR-1",
@@ -164,6 +179,8 @@ OUTPUT (JSON only, no other text):
 }}
 
 RULES:
+- Extract all explicit acronyms, protocol abbreviations, and technical terms present in the codebase.
+- Extract all reference documents, toolchain build specs (e.g. .prj, .spec, Makefile, CMakeLists.txt, package.json), standards, and declared libraries as reference_documents.
 - Every FR must have at least one evidence_id. No evidence = omit.
 - Do NOT infer NFRs from absence of code. Only from explicit evidence
   (rate limiters, auth middleware, encryption calls, retry logic, etc.)
@@ -566,9 +583,9 @@ def run_stage_d(
     result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
     frs = result.get("functional_requirements") or []
     nfrs = result.get("non_functional_signals") or []
-    fr_count = len(frs)
-    nfr_count = len(nfrs)
-    log(f"Extracted {fr_count} FRs, {nfr_count} NFR signals — CANONICAL FROZEN")
+    acronyms = result.get("acronyms") or []
+    refs = result.get("reference_documents") or []
+    log(f"Extracted {len(frs)} FRs, {len(nfrs)} NFRs, {len(acronyms)} acronyms, {len(refs)} reference docs — CANONICAL FROZEN")
     return result
 
 
