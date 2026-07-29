@@ -634,3 +634,18 @@ def run_pure_python_extractor(codebase_path: Path, output_json_path: Path, inclu
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(graph, f, indent=2)
 
+
+def resolve_codebase_path(codebase_path_str: str | None = None) -> Path:
+    """Resolve extracted codebase path, handling browser refreshes and single nested subfolders."""
+    if codebase_path_str:
+        p = Path(codebase_path_str)
+        if p.exists():
+            return p
+    base = Path("srs_output/extracted_codebase")
+    if base.exists():
+        subdirs = [d for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        if len(subdirs) == 1:
+            return subdirs[0]
+        return base
+    return base
+

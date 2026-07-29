@@ -178,6 +178,15 @@ def _conn(db_path: Path):
         c.close()
 
 
+def clear_pipeline_cache(db_path: Path):
+    """Clear leaf_summaries and module_rollups tables for a clean extraction run."""
+    if not db_path.exists():
+        return
+    with _conn(db_path) as c:
+        c.execute("DELETE FROM leaf_summaries")
+        c.execute("DELETE FROM module_rollups")
+
+
 def get_file_manifest(db_path: Path) -> list[str]:
     with _conn(db_path) as c:
         rows = c.execute(

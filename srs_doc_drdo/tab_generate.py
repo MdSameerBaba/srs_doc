@@ -7,8 +7,10 @@ import traceback
 from pathlib import Path
 from datetime import datetime
 
+import helpers
 from pipeline import stages
 from pipeline import assembler
+from pipeline import graph_loader as gl
 from pipeline import ollama_client as _ollama_client
 
 # ── Section number → title lookup (safe alternative to index arithmetic) ──
@@ -87,6 +89,10 @@ def render_generate_tab(client):
                 st.error("SQLite database not found. Please re-upload your project in Tab 1.")
                 return
 
+            # Clear any failed/incomplete pipeline cache from previous runs
+            gl.clear_pipeline_cache(db_path)
+            codebase_dir = helpers.resolve_codebase_path(st.session_state.get("codebase_path"))
+
             log_placeholder = st.empty()
 
             with st.spinner("Analyzing codebase and extracting requirements..."):
@@ -96,7 +102,6 @@ def render_generate_tab(client):
                 add_log("Stage 1: Building Architecture Snapshot (Prompt A)...")
                 log_placeholder.code("\n".join(st.session_state.logs[-15:]))
                 try:
-                    codebase_dir = Path(st.session_state.codebase_path) if st.session_state.get("codebase_path") else Path("srs_output/extracted_codebase")
                     arch = stages.run_stage_a(db_path, codebase_dir, config, add_log)
                     st.session_state.architecture = arch
                     st.session_state.stage_status[1] = "complete"
@@ -117,7 +122,6 @@ def render_generate_tab(client):
                     def stage_b_progress(completed, total):
                         pct = completed / total if total > 0 else 0
                         progress_ph.progress(pct, text=f"Summarized {completed}/{total} leaf nodes...")
-                    codebase_dir = Path(st.session_state.codebase_path) if st.session_state.get("codebase_path") else Path("srs_output/extracted_codebase")
                     stages.run_stage_b(db_path, codebase_dir, config, add_log, stage_b_progress)
                     progress_ph.empty()
                     st.session_state.stage_status[2] = "complete"

@@ -464,10 +464,10 @@ def run_stage_b(
         saved: list[dict] = []
         for node in batch:
             s = sum_map.get(node["id"])
-            if s and isinstance(s, dict) and s.get("summary"):
+            if s and isinstance(s, dict) and s.get("summary") and s.get("summary") != "UNCLEAR":
                 entry = {
                     "id":          node["id"],
-                    "summary":     s.get("summary", "UNCLEAR"),
+                    "summary":     s.get("summary"),
                     "side_effects":s.get("side_effects") or [],
                     "inputs":      s.get("inputs") or [],
                     "outputs":     s.get("outputs") or [],
@@ -476,29 +476,19 @@ def run_stage_b(
                         "lines": [node["line_start"], node["line_end"]],
                     },
                 }
-            else:
-                # Fallback sentinel for this node
-                entry = {
-                    "id":          node["id"],
-                    "summary":     "UNCLEAR",
-                    "side_effects":[], "inputs":[], "outputs":[],
-                    "evidence":    {
-                        "file":  node["file_path"],
-                        "lines": [node["line_start"], node["line_end"]],
-                    },
-                }
-            saved.append(entry)
+                saved.append(entry)
         
-        # Save the entire batch in a single database transaction
-        try:
-            gl.save_leaf_summaries_bulk(db_path, saved)
-        except Exception as e:
-            log(f"  ⚠ Bulk save failed, falling back to individual inserts: {e}")
-            for entry in saved:
-                try:
-                    gl.save_leaf_summary(db_path, entry)
-                except Exception:
-                    pass
+        # Save valid summaries to database in a single transaction
+        if saved:
+            try:
+                gl.save_leaf_summaries_bulk(db_path, saved)
+            except Exception as e:
+                log(f"  ⚠ Bulk save failed: {e}")
+                for entry in saved:
+                    try:
+                        gl.save_leaf_summary(db_path, entry)
+                    except Exception:
+                        pass
         return saved
 
     workers = max(1, min(config.get("concurrency", 3), n_batches))
