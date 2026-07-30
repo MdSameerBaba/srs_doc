@@ -129,28 +129,44 @@ def extract_json(text: str) -> dict:
                 pass
 
     # Step 3: Find the LARGEST balanced JSON object by scanning for {
-    # This handles "Here is the JSON: {...}" style output from phi/llama3
+    # String-aware bracket matcher handles code snippets containing { or } inside quotes
     best: dict | None = None
     best_len = 0
     for i, ch in enumerate(text):
         if ch == "{":
             depth = 0
+            in_str = False
+            str_char = ""
+            skip = False
             for j in range(i, len(text)):
-                if text[j] == "{":
-                    depth += 1
-                elif text[j] == "}":
-                    depth -= 1
-                if depth == 0:
-                    candidate = text[i: j + 1]
-                    if len(candidate) > best_len:
-                        try:
-                            parsed = json.loads(candidate)
-                            if isinstance(parsed, dict):
-                                best = parsed
-                                best_len = len(candidate)
-                        except json.JSONDecodeError:
-                            pass
-                    break
+                c = text[j]
+                if skip:
+                    skip = False
+                    continue
+                if in_str:
+                    if c == "\\":
+                        skip = True
+                    elif c == str_char:
+                        in_str = False
+                else:
+                    if c in ('"', "'"):
+                        in_str = True
+                        str_char = c
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[i: j + 1]
+                            if len(candidate) > best_len:
+                                try:
+                                    parsed = json.loads(candidate)
+                                    if isinstance(parsed, dict):
+                                        best = parsed
+                                        best_len = len(candidate)
+                                except json.JSONDecodeError:
+                                    pass
+                            break
 
     if best is not None:
         return best
@@ -195,27 +211,44 @@ def extract_json_array(text: str) -> list:
                 pass
 
     # Step 3: Find the LARGEST balanced JSON array by scanning for [
+    # String-aware bracket matcher handles code snippets containing [ or ] inside quotes
     best: list | None = None
     best_len = 0
     for i, ch in enumerate(text):
         if ch == "[":
             depth = 0
+            in_str = False
+            str_char = ""
+            skip = False
             for j in range(i, len(text)):
-                if text[j] == "[":
-                    depth += 1
-                elif text[j] == "]":
-                    depth -= 1
-                if depth == 0:
-                    candidate = text[i: j + 1]
-                    if len(candidate) > best_len:
-                        try:
-                            parsed = json.loads(candidate)
-                            if isinstance(parsed, list):
-                                best = parsed
-                                best_len = len(candidate)
-                        except json.JSONDecodeError:
-                            pass
-                    break
+                c = text[j]
+                if skip:
+                    skip = False
+                    continue
+                if in_str:
+                    if c == "\\":
+                        skip = True
+                    elif c == str_char:
+                        in_str = False
+                else:
+                    if c in ('"', "'"):
+                        in_str = True
+                        str_char = c
+                    elif c == "[":
+                        depth += 1
+                    elif c == "]":
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[i: j + 1]
+                            if len(candidate) > best_len:
+                                try:
+                                    parsed = json.loads(candidate)
+                                    if isinstance(parsed, list):
+                                        best = parsed
+                                        best_len = len(candidate)
+                                except json.JSONDecodeError:
+                                    pass
+                            break
 
     if best is not None:
         return best

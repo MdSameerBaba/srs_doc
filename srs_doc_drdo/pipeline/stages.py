@@ -277,6 +277,10 @@ def _read_source_slice(
         fp = Path(file_path)
         if not fp.is_absolute():
             fp = codebase_path / file_path
+            if not fp.exists():
+                from helpers import resolve_codebase_path
+                resolved_base = resolve_codebase_path(str(codebase_path))
+                fp = resolved_base / file_path
         with open(fp, "r", encoding="utf-8", errors="replace") as fh:
             lines = fh.readlines()
         s = max(0, (line_start or 1) - 1)
