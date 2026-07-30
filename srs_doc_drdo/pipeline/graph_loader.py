@@ -91,7 +91,7 @@ def load_graph(graph_path: Path, db_path: Path) -> dict:
     raw_links: list = graph.get("links", graph.get("edges", []))
 
     # ── nodes ──────────────────────────────────────────────
-    node_count = 0
+    node_tuples = []
     for n in raw_nodes:
         file_path = (
             n.get("file")
@@ -100,48 +100,52 @@ def load_graph(graph_path: Path, db_path: Path) -> dict:
             or n.get("source_file")
             or ""
         )
-        conn.execute(
+        node_tuples.append((
+            n.get("id", ""),
+            n.get("label") or n.get("name", ""),
+            n.get("type", "unknown"),
+            file_path,
+            n.get("line_start") or n.get("lineStart"),
+            n.get("line_end")   or n.get("lineEnd"),
+            n.get("docstring", ""),
+            n.get("sha256")  or n.get("hash", ""),
+            json.dumps(n),
+        ))
+
+    with conn:
+        conn.executemany(
             """
             INSERT OR REPLACE INTO nodes
                 (id, label, type, file_path, line_start, line_end,
                  docstring, sha256, raw_json)
             VALUES (?,?,?,?,?,?,?,?,?)
             """,
-            (
-                n.get("id", ""),
-                n.get("label") or n.get("name", ""),
-                n.get("type", "unknown"),
-                file_path,
-                n.get("line_start") or n.get("lineStart"),
-                n.get("line_end")   or n.get("lineEnd"),
-                n.get("docstring", ""),
-                n.get("sha256")  or n.get("hash", ""),
-                json.dumps(n),
-            ),
+            node_tuples
         )
-        node_count += 1
+    node_count = len(node_tuples)
 
     # ── edges ──────────────────────────────────────────────
-    edge_count = 0
+    edge_tuples = []
     for lnk in raw_links:
         confidence = lnk.get("confidence", "EXTRACTED")
         default_score = 1.0 if confidence == "EXTRACTED" else 0.5
-        conn.execute(
+        edge_tuples.append((
+            lnk.get("source", ""),
+            lnk.get("target", ""),
+            lnk.get("type") or lnk.get("rel_type", "calls"),
+            confidence,
+            lnk.get("score") or lnk.get("conf_score", default_score),
+        ))
+
+    with conn:
+        conn.executemany(
             """
             INSERT INTO edges (source, target, rel_type, confidence, conf_score)
             VALUES (?,?,?,?,?)
             """,
-            (
-                lnk.get("source", ""),
-                lnk.get("target", ""),
-                lnk.get("type") or lnk.get("rel_type", "calls"),
-                confidence,
-                lnk.get("score") or lnk.get("conf_score", default_score),
-            ),
+            edge_tuples
         )
-        edge_count += 1
-
-    conn.commit()
+    edge_count = len(edge_tuples)
 
     # ── stats ──────────────────────────────────────────────
     type_counts: dict = {}
