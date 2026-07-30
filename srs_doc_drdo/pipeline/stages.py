@@ -328,14 +328,20 @@ def _read_config_files(codebase_path: Path) -> str:
         "pom.xml", "Cargo.toml", "go.mod", "composer.json",
     ]
     parts: list[str] = []
-    for name in _NAMES:
-        p = codebase_path / name
-        if p.exists():
-            try:
-                content = p.read_text(encoding="utf-8")[:1500]
-                parts.append(f"=== {name} ===\n{content}")
-            except Exception:
-                pass
+    config_paths = [codebase_path / name for name in _NAMES if (codebase_path / name).exists()]
+    try:
+        for extra in list(codebase_path.glob("*.prj")) + list(codebase_path.glob("*.spec")):
+            if extra not in config_paths:
+                config_paths.append(extra)
+    except Exception:
+        pass
+
+    for p in config_paths[:10]:
+        try:
+            content = p.read_text(encoding="utf-8", errors="ignore")[:1500]
+            parts.append(f"=== {p.name} ===\n{content}")
+        except Exception:
+            pass
     return "\n\n".join(parts) or "[No recognised config files found]"
 
 
