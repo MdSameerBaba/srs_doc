@@ -528,13 +528,14 @@ def run_stage_c(
     modules = gl.get_distinct_modules(db_path)
     total = len(modules)
     rollups: list[dict] = []
+    completed_count = 0
 
-    for i, module in enumerate(modules):
-        log(f"Rolling up module ({i+1}/{total}): {module}")
+    log(f"Rolling up {total} subsystem modules using concurrency workers...")
+
+    def _rollup_module(module: str) -> dict | None:
         summaries = gl.get_leaf_summaries_for_module(db_path, module)
         if not summaries:
-            progress_cb(i + 1, total)
-            continue
+            return None
 
         edges = gl.get_intramodule_edges(db_path, module)
         prompt = _PROMPT_C.format(
@@ -547,18 +548,28 @@ def run_stage_c(
             if isinstance(res, dict):
                 res["module"] = module
                 gl.save_module_rollup(db_path, res)
-                rollups.append(res)
+                return res
         except Exception as exc:
             log(f"  ⚠ Rollup failed for {module}: {exc}")
-            rollups.append({
+            return {
                 "module": module,
                 "responsibilities": [],
                 "key_entities": [],
                 "evidence_ids": [],
-            })
-        progress_cb(i + 1, total)
+            }
+        return None
 
-    log(f"Module rollup done: {len(rollups)} modules")
+    workers = max(1, min(config.get("concurrency", 3), total))
+    with ThreadPoolExecutor(max_workers=workers) as exe:
+        futures = {exe.submit(_rollup_module, m): m for m in modules}
+        for fut in as_completed(futures):
+            res = fut.result()
+            if res:
+                rollups.append(res)
+            completed_count += 1
+            progress_cb(completed_count, total)
+
+    log(f"Module rollup done: {len(rollups)}/{total} subsystem modules completed.")
     return rollups
 
 

@@ -306,7 +306,9 @@ def get_all_leaf_summaries(db_path: Path) -> list[dict]:
 
 
 def get_distinct_modules(db_path: Path) -> list[str]:
-    """Return unique module names derived from file paths."""
+    """Return unique subsystem/directory module names derived from file paths.
+    Groups files into top-level or second-level directory modules rather than
+    per-file stems, preventing 1,000+ repetitive LLM calls on large codebases."""
     with _conn(db_path) as c:
         rows = c.execute(
             "SELECT DISTINCT file_path FROM nodes WHERE file_path != '' ORDER BY file_path"
@@ -314,26 +316,47 @@ def get_distinct_modules(db_path: Path) -> list[str]:
     seen: set = set()
     modules: list = []
     for r in rows:
-        stem = Path(r["file_path"]).stem
-        if stem not in seen:
-            seen.add(stem)
-            modules.append(stem)
-    return modules
+        fp = r["file_path"].replace("\\", "/").strip("/")
+        parts = Path(fp).parts
+        if len(parts) <= 1:
+            mod = "core"
+        elif parts[0] in ["src", "lib", "app", "source", "pkg"] and len(parts) > 2:
+            mod = f"{parts[0]}/{parts[1]}"
+        else:
+            mod = parts[0]
+            
+        if mod not in seen:
+            seen.add(mod)
+            modules.append(mod)
+    return modules if modules else ["core"]
 
 
-def get_leaf_summaries_for_module(db_path: Path, module_stem: str) -> list[dict]:
+def get_leaf_summaries_for_module(db_path: Path, module_name: str) -> list[dict]:
     with _conn(db_path) as c:
-        # Match files that have module_stem with any extension (e.g. /auth.cpp, \auth.h, auth.py, auth)
-        rows = c.execute(
-            """
-            SELECT ls.node_id, ls.summary, ls.side_effects,
-                   ls.inputs, ls.outputs, ls.evidence
-            FROM   leaf_summaries ls
-            JOIN   nodes n ON ls.node_id = n.id
-            WHERE  n.file_path LIKE ? OR n.file_path LIKE ? OR n.file_path LIKE ? OR n.file_path = ?
-            """,
-            (f"%/{module_stem}.%", f"%\\{module_stem}.%", f"{module_stem}.%", module_stem),
-        ).fetchall()
+        if module_name == "core":
+            rows = c.execute(
+                """
+                SELECT ls.node_id, ls.summary, ls.side_effects,
+                       ls.inputs, ls.outputs, ls.evidence
+                FROM   leaf_summaries ls
+                JOIN   nodes n ON ls.node_id = n.id
+                WHERE  (n.file_path NOT LIKE '%/%' AND n.file_path NOT LIKE '%\\%')
+                   OR  n.file_path LIKE 'core/%' OR n.file_path LIKE 'core\\%'
+                """
+            ).fetchall()
+        else:
+            pattern_fwd = f"{module_name}/%"
+            pattern_back = f"{module_name}\\%"
+            rows = c.execute(
+                """
+                SELECT ls.node_id, ls.summary, ls.side_effects,
+                       ls.inputs, ls.outputs, ls.evidence
+                FROM   leaf_summaries ls
+                JOIN   nodes n ON ls.node_id = n.id
+                WHERE  n.file_path LIKE ? OR n.file_path LIKE ? OR n.file_path LIKE ? OR n.file_path = ? OR n.file_path LIKE ? OR n.file_path LIKE ?
+                """,
+                (pattern_fwd, pattern_back, f"%/{module_name}/%", module_name, f"%/{module_name}.%", f"%\\{module_name}.%"),
+            ).fetchall()
     return [
         {
             "id":           r["node_id"],
@@ -347,23 +370,35 @@ def get_leaf_summaries_for_module(db_path: Path, module_stem: str) -> list[dict]
     ]
 
 
-def get_intramodule_edges(db_path: Path, module_stem: str) -> list[dict]:
+def get_intramodule_edges(db_path: Path, module_name: str) -> list[dict]:
     with _conn(db_path) as c:
-        # Match edges where both source and target files belong to the module_stem (any extension)
-        rows = c.execute(
-            """
-            SELECT e.source, e.target, e.rel_type
-            FROM   edges e
-            JOIN   nodes ns ON e.source = ns.id
-            JOIN   nodes nt ON e.target = nt.id
-            WHERE  (ns.file_path LIKE ? OR ns.file_path LIKE ? OR ns.file_path LIKE ? OR ns.file_path = ?)
-            AND    (nt.file_path LIKE ? OR nt.file_path LIKE ? OR nt.file_path LIKE ? OR nt.file_path = ?)
-            """,
-            (
-                f"%/{module_stem}.%", f"%\\{module_stem}.%", f"{module_stem}.%", module_stem,
-                f"%/{module_stem}.%", f"%\\{module_stem}.%", f"{module_stem}.%", module_stem
-            ),
-        ).fetchall()
+        if module_name == "core":
+            rows = c.execute(
+                """
+                SELECT e.source, e.target, e.rel_type
+                FROM   edges e
+                JOIN   nodes ns ON e.source = ns.id
+                JOIN   nodes nt ON e.target = nt.id
+                WHERE  (ns.file_path NOT LIKE '%/%' AND ns.file_path NOT LIKE '%\\%')
+                   AND (nt.file_path NOT LIKE '%/%' AND nt.file_path NOT LIKE '%\\%')
+                LIMIT 100
+                """
+            ).fetchall()
+        else:
+            pattern_fwd = f"{module_name}/%"
+            pattern_back = f"{module_name}\\%"
+            rows = c.execute(
+                """
+                SELECT e.source, e.target, e.rel_type
+                FROM   edges e
+                JOIN   nodes ns ON e.source = ns.id
+                JOIN   nodes nt ON e.target = nt.id
+                WHERE  (ns.file_path LIKE ? OR ns.file_path LIKE ? OR ns.file_path = ?)
+                   AND (nt.file_path LIKE ? OR nt.file_path LIKE ? OR nt.file_path = ?)
+                LIMIT 100
+                """,
+                (pattern_fwd, pattern_back, module_name, pattern_fwd, pattern_back, module_name),
+            ).fetchall()
     return [{"source": r["source"], "target": r["target"], "type": r["rel_type"]} for r in rows]
 
 
