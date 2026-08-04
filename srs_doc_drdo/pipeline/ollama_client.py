@@ -275,13 +275,18 @@ def chat(
     max_retries: int = 3,
     temperature: float = 0.0,
     num_ctx: int = 64000,
+    provider: str | None = None,
+    api_key: str | None = None,
 ) -> Union[dict, str]:
     """
     Send a chat message to the configured LLM provider (Ollama or Gemini API).
-    Automatically routes based on the global PROVIDER setting.
+    Automatically routes based on the explicit or global PROVIDER setting.
     """
-    if PROVIDER == "gemini":
-        return _chat_gemini(model, prompt, expect_json, max_retries, temperature)
+    effective_provider = provider if provider is not None else PROVIDER
+    effective_api_key = api_key if api_key is not None else API_KEY
+
+    if effective_provider == "gemini":
+        return _chat_gemini(model, prompt, expect_json, max_retries, temperature, api_key=effective_api_key)
     return _chat_ollama(model, prompt, base_url, expect_json, max_retries, temperature, num_ctx)
 
 
@@ -291,6 +296,7 @@ def _chat_gemini(
     expect_json: bool = True,
     max_retries: int = 3,
     temperature: float = 0.0,
+    api_key: str = "",
 ) -> Union[dict, str]:
     """Route to Google Gemini API."""
     actual_model = model
@@ -300,7 +306,8 @@ def _chat_gemini(
         else:
             actual_model = "gemini-2.5-flash"
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{actual_model}:generateContent?key={API_KEY}"
+    key_to_use = api_key or API_KEY
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{actual_model}:generateContent?key={key_to_use}"
     headers = {"Content-Type": "application/json"}
 
     payload = {

@@ -172,13 +172,27 @@ def create_job(
 
 
 def delete_job(job_id: str):
-    """Delete a job directory and remove from manifest."""
+    """Delete a job directory cleanly and remove from manifest."""
     init_job_system()
     job_dir = BASE_JOBS_DIR / job_id
     if job_dir.exists():
-        import shutil
+        for root, dirs, files in os.walk(job_dir, topdown=False):
+            for name in files:
+                p = Path(root) / name
+                try:
+                    os.chmod(p, 0o777)
+                    p.unlink()
+                except Exception:
+                    pass
+            for name in dirs:
+                p = Path(root) / name
+                try:
+                    os.chmod(p, 0o777)
+                    p.rmdir()
+                except Exception:
+                    pass
         try:
-            shutil.rmtree(job_dir)
+            job_dir.rmdir()
         except Exception:
             pass
 
