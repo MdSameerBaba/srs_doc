@@ -1,47 +1,17 @@
-# tab_upload.py — Tab 1: Upload Project
+# tab_upload.py — Tab 1: Submit Project Job (Upload)
 
 import streamlit as st
-import os
-import zipfile
-import tarfile
 from pathlib import Path
-from helpers import extract_zip, extract_tar, language_counts, total_size_kb, run_pure_python_extractor
 from constants import SUPPORTED_EXTENSIONS, DEFAULT_INCLUDED_EXTENSIONS
-from pipeline import graph_loader as gl
-
-
-def clear_directory(path: Path):
-    """Safely clear a directory handling read-only files on Windows without using deprecated shutil callbacks."""
-    if not path.exists():
-        return
-    for root, dirs, files in os.walk(path, topdown=False):
-        for name in files:
-            p = Path(root) / name
-            try:
-                os.chmod(p, 0o777)
-                p.unlink()
-            except Exception:
-                pass
-        for name in dirs:
-            p = Path(root) / name
-            try:
-                os.chmod(p, 0o777)
-                p.rmdir()
-            except Exception:
-                pass
-
-
-def _get_archive_id(archive) -> str:
-    """Create a unique fingerprint for an uploaded file so we can detect new uploads."""
-    return f"{archive.name}::{archive.size}"
+from pipeline import job_manager
 
 
 def render_upload_tab():
-    st.markdown("### Upload Your Project Codebase")
+    st.markdown("### 🚀 Submit Project Codebase Job")
     st.info(
         "Upload a **ZIP or TAR.GZ archive** of your project folder. "
-        "The system will extract your codebase, build a structured AST code graph in SQLite, "
-        "and analyze file relationships to generate a high-fidelity SRS."
+        "The system will create an isolated background job, extract your codebase, build a structured AST code graph in SQLite, "
+        "and automatically run the hands-free SRS pipeline."
     )
 
     col_up, col_info = st.columns([1, 1], gap="large")
@@ -56,8 +26,7 @@ def render_upload_tab():
             options=all_ext_options,
             default=st.session_state.get("include_extensions", default_selected),
             format_func=lambda ext: f"{ext}  ({SUPPORTED_EXTENSIONS.get(ext, ext)})",
-            help="Select which file extensions to include in the analysis. "
-                 "The defaults cover C/C++, Python, TCL scripts, Project files, Specs, and Docs.",
+            help="Select which file extensions to include in the analysis.",
             key="include_extensions_multiselect",
         )
 
@@ -68,154 +37,37 @@ def render_upload_tab():
         )
 
         if archive:
-            # ── Guard: only process a genuinely NEW upload ──
-            # On every st.rerun(), the file_uploader returns the same file object.
-            # We must NOT re-extract, re-parse, or reset state on reruns.
-            # We only process when the file identity (name + size) changes.
-            current_id = _get_archive_id(archive)
-            already_processed = st.session_state.get("processed_archive_id") == current_id
+            st.success(f"📦 Archive selected: **{archive.name}** ({archive.size / 1024:.1f} KB)")
+            
+            submit_btn = st.button("🚀 Submit Job & Run Background Pipeline", type="primary", use_container_width=True)
 
-            if already_processed:
-                # ── Rerun path: just show the cached success message ──
-                if st.session_state.project_files:
-                    files = st.session_state.project_files
-                    stats = st.session_state.get("graph_stats", {})
-                    st.markdown(
-                        f'<div class="strip-success">✅ Successfully loaded <strong>{len(files)}</strong> '
-                        f'files from <strong>{archive.name}</strong> '
-                        f'({total_size_kb(files):.1f} KB total)</div>',
-                        unsafe_allow_html=True,
-                    )
-                    if stats:
-                        st.markdown(
-                            f'<div class="strip-success">📊 Extracted <strong>{stats.get("nodes", 0)}</strong> code nodes '
-                            f'and <strong>{stats.get("edges", 0)}</strong> relations in SQLite.</div>',
-                            unsafe_allow_html=True,
-                        )
-            else:
-                # ── First-time processing: extract, parse, index ──
-                with st.spinner("🔍 Extracting, parsing AST symbols, and indexing graph..."):
-                    incl_list = st.session_state.get("include_extensions", default_selected)
+            if submit_btn:
+                archive.seek(0)
+                bytes_data = archive.read()
+                
+                incl_list = st.session_state.get("include_extensions", default_selected)
+                config = {
+                    "heavy_model": st.session_state.current_model,
+                    "fast_model": st.session_state.get("fast_model", "qwen3:latest"),
+                    "ollama_url": st.session_state.ollama_host,
+                    "concurrency": st.session_state.get("concurrency", 3),
+                    "enable_audit": st.session_state.get("enable_audit", False),
+                    "num_ctx": st.session_state.get("num_ctx", 64000),
+                    "file_level_summarization": st.session_state.get("file_level_summarization", False),
+                    "llm_provider": st.session_state.get("llm_provider", "ollama"),
+                    "gemini_api_key": st.session_state.get("gemini_api_key", ""),
+                }
 
-                    # 1. Memory-based load for backward compatibility with prompt context builder
-                    archive.seek(0)
-                    loaded = (
-                        extract_zip(archive, include_extensions=incl_list)
-                        if archive.name.lower().endswith(".zip")
-                        else extract_tar(archive, include_extensions=incl_list)
-                    )
-
-                    # 2. Disk-based extraction for AST graph parser
-                    output_dir = Path("srs_output")
-                    dest_dir = output_dir / "extracted_codebase"
-                    clear_directory(dest_dir)
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-
-                    stats = {}
-                    archive.seek(0)
-                    try:
-                        if archive.name.lower().endswith(".zip"):
-                            with zipfile.ZipFile(archive, 'r') as zip_ref:
-                                zip_ref.extractall(dest_dir)
-                        else:
-                            with tarfile.open(fileobj=archive, mode="r:*") as tar_ref:
-                                tar_ref.extractall(dest_dir)
-
-                        # Resolve single nested directory
-                        contents = list(dest_dir.iterdir())
-                        if len(contents) == 1 and contents[0].is_dir():
-                            codebase_path_resolved = contents[0]
-                        else:
-                            codebase_path_resolved = dest_dir
-
-                        # Save resolved path to state
-                        st.session_state.codebase_path = str(codebase_path_resolved.resolve())
-
-                        # Run AST extraction (with selected inclusion extensions)
-                        graph_json_path = output_dir / "graph.json"
-                        run_pure_python_extractor(codebase_path_resolved, graph_json_path, include_extensions=incl_list)
-
-                        # Load into SQLite DB
-                        db_path = output_dir / "srs_graph.db"
-                        if db_path.exists():
-                            try:
-                                db_path.unlink()
-                            except Exception:
-                                pass
-
-                        stats = gl.load_graph(graph_json_path, db_path)
-                        st.session_state.graph_stats = stats
-
-                    except Exception as e:
-                        st.error(f"Error parsing codebase graph: {e}")
-                        loaded = None
-
-                if loaded:
-                    # Save project files and archive identity
-                    st.session_state.project_files = loaded
-                    st.session_state.archive_name = Path(archive.name).stem
-                    st.session_state.processed_archive_id = current_id
-
-                    # Reset downstream pipeline state for a NEW upload only
-                    st.session_state.srs_sections = {}
-                    st.session_state.phase_1_complete = False
-                    st.session_state.requirements_frozen = False
-                    st.session_state.generating_all = False
-                    st.session_state.gen_all_index = 0
-                    st.session_state.verification_reports = {}
-                    st.session_state.full_srs_doc = ""
-
-                    st.markdown(
-                        f'<div class="strip-success">✅ Successfully loaded <strong>{len(loaded)}</strong> '
-                        f'files from <strong>{archive.name}</strong> '
-                        f'({total_size_kb(loaded):.1f} KB total)</div>',
-                        unsafe_allow_html=True,
-                    )
-                    if stats:
-                        st.markdown(
-                            f'<div class="strip-success">📊 Extracted <strong>{stats.get("nodes", 0)}</strong> code nodes '
-                            f'and <strong>{stats.get("edges", 0)}</strong> relations in SQLite.</div>',
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.warning("⚠️ No supported code files found in the archive.")
+                with st.spinner("Submitting job to background runner..."):
+                    job_id = job_manager.create_job(archive.name, bytes_data, incl_list, config)
+                    st.session_state.active_job_id = job_id
+                    st.success(f"🎉 Job **{job_id}** submitted successfully! Go to the **Multi-Job Dashboard** tab to track live progress.")
 
     with col_info:
-        if st.session_state.project_files:
-            files = st.session_state.project_files
-            st.markdown("### 📊 Project Analysis")
-
-            col_m1, col_m2 = st.columns(2)
-            with col_m1:
-                st.metric("Total Files", len(files))
-            with col_m2:
-                st.metric("Total Size", f"{total_size_kb(files):.1f} KB")
-
-            if st.session_state.graph_stats:
-                col_m3, col_m4 = st.columns(2)
-                with col_m3:
-                    st.metric("AST Code Nodes", st.session_state.graph_stats.get("nodes", 0))
-                with col_m4:
-                    st.metric("Dependency Edges", st.session_state.graph_stats.get("edges", 0))
-
-            lang_data = language_counts(files)
-            st.markdown("**Languages / File Types Detected:**")
-            for lang, cnt in sorted(lang_data.items(), key=lambda x: -x[1]):
-                bar_w = int(cnt / max(lang_data.values()) * 100)
-                st.markdown(
-                    f"`{lang}` — {cnt} file(s) "
-                    f'<div style="background:#7c3aed;height:6px;width:{bar_w}%;border-radius:4px;margin-bottom:4px"></div>',
-                    unsafe_allow_html=True
-                )
-        else:
-            st.markdown("### 💡 Tips")
-            st.markdown("""
-- Compress your entire project folder into a `.zip` or `.tar.gz`.
-- Include all source files: backend, frontend, configs, SQL schemas, README, etc.
-- Our custom AST parser runs **100% offline** and extracts functions, classes, and call-graphs directly.
-- The SQLite database maps all code relationships to enable precise, hallucination-free requirements tracing.
-            """)
-
-    if st.session_state.project_files:
-        st.markdown("---")
-        st.success("✅ Project loaded! Go to the **Generate Sections** tab to start building your SRS.")
+        st.markdown("### 💡 Highlights")
+        st.markdown("""
+- **Isolated Multi-Project Storage:** Every uploaded archive gets its own isolated directory on disk (`srs_output/jobs/<job_id>/`). Old uploads never interfere with new ones!
+- **Persistent Background Processing:** Runs in background threads. You can close or refresh your browser tab anytime without interrupting running jobs!
+- **Hands-Free Pipeline:** Automatically runs AST extraction $\rightarrow$ Code Summarization $\rightarrow$ Module Rollups $\rightarrow$ Requirements Freeze $\rightarrow$ SRS Section Writing $\rightarrow$ Final Assembly.
+- **Multiple Parallel Jobs:** Upload multiple projects in parallel or sequentially. Track all active and completed jobs in the **Multi-Job Dashboard**.
+        """)

@@ -240,16 +240,15 @@ st.markdown(""" <div class="title-header">SRS Document Generation</div> """, uns
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 tab_upload, tab_generate, tab_preview = st.tabs([
-    "📁  Upload Project",
-    "⚡  Generate Sections",
-    "📄  Preview & Export",
+    "🚀  Submit Project Job",
+    "📊  Multi-Job Dashboard",
+    "📄  Preview & Export SRS",
 ])
 
 with tab_upload:
     render_upload_tab()
 
 with tab_generate:
-    # Pass None as client since our pipeline uses our HTTP client directly
     render_generate_tab(None)
 
 with tab_preview:

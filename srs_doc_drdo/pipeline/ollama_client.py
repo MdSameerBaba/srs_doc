@@ -273,7 +273,7 @@ def chat(
     base_url: str = "http://localhost:11434",
     expect_json: bool = True,
     max_retries: int = 3,
-    temperature: float = 0.1,
+    temperature: float = 0.0,
     num_ctx: int = 64000,
 ) -> Union[dict, str]:
     """
@@ -290,7 +290,7 @@ def _chat_gemini(
     prompt: str,
     expect_json: bool = True,
     max_retries: int = 3,
-    temperature: float = 0.1,
+    temperature: float = 0.0,
 ) -> Union[dict, str]:
     """Route to Google Gemini API."""
     actual_model = model
@@ -305,7 +305,7 @@ def _chat_gemini(
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": temperature},
+        "generationConfig": {"temperature": 0.0},
     }
     if expect_json:
         payload["generationConfig"]["responseMimeType"] = "application/json"
@@ -335,27 +335,19 @@ def _chat_ollama(
     base_url: str = "http://localhost:11434",
     expect_json: bool = True,
     max_retries: int = 3,
-    temperature: float = 0.1,
+    temperature: float = 0.0,
     num_ctx: int = 64000,
 ) -> Union[dict, str]:
     """
-    Send a request to local Ollama server.
-
-    Notes:
-      - format=json is set for JSON stages to constrain the model output.
-        NOTE: Ollama's format=json forces a JSON *object* {}. For stages
-        that expect a JSON *array* [], we set expect_json=False and use
-        extract_json_array() separately (Stage B).
-      - num_ctx overrides Ollama's default 2048-token context window.
-      - All raw content is passed through clean_llm_output() to strip
-        reasoning blocks and prose preambles regardless of model.
+    Send a request to local Ollama server with deterministic seed=42 and temperature=0.0.
     """
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
         "options": {
-            "temperature": temperature,
+            "temperature": 0.0,
+            "seed": 42,
             "num_ctx": num_ctx,
         },
     }

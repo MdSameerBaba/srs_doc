@@ -417,6 +417,7 @@ def run_stage_b(
                 return False
             return (le - ls) < 1
         nodes = [n for n in nodes if not _is_trivial(n)]
+    nodes = sorted(nodes, key=lambda n: n.get("id", ""))
     total = len(nodes)
 
     if total == 0:
@@ -525,7 +526,7 @@ def run_stage_c(
     log: Callable[[str], None],
     progress_cb: Callable[[int, int], None],
 ) -> list[dict]:
-    modules = gl.get_distinct_modules(db_path)
+    modules = sorted(gl.get_distinct_modules(db_path))
     total = len(modules)
     rollups: list[dict] = []
     completed_count = 0
@@ -533,7 +534,7 @@ def run_stage_c(
     log(f"Rolling up {total} subsystem modules using concurrency workers...")
 
     def _rollup_module(module: str) -> dict | None:
-        summaries = gl.get_leaf_summaries_for_module(db_path, module)
+        summaries = sorted(gl.get_leaf_summaries_for_module(db_path, module), key=lambda s: s.get("id", ""))
         if not summaries:
             return None
 
@@ -569,6 +570,7 @@ def run_stage_c(
             completed_count += 1
             progress_cb(completed_count, total)
 
+    rollups = sorted(rollups, key=lambda r: r.get("module", ""))
     log(f"Module rollup done: {len(rollups)}/{total} subsystem modules completed.")
     return rollups
 
@@ -584,7 +586,7 @@ def run_stage_d(
     log: Callable[[str], None],
 ) -> dict:
     log("Loading all module rollups for canonical extraction…")
-    rollups = gl.get_all_module_rollups(db_path)
+    rollups = sorted(gl.get_all_module_rollups(db_path), key=lambda r: r.get("module", ""))
 
     prompt = _PROMPT_D.format(
         module_rollups=json.dumps(rollups, indent=2),

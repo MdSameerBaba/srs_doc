@@ -1,52 +1,53 @@
-# tab_preview.py — Tab 3: Preview & Export
+# tab_preview.py — Tab 3: Preview & Export SRS Document
 
 import streamlit as st
 import json
 from pathlib import Path
 from pipeline import stages
 from pipeline import assembler
+from pipeline import job_manager
+
 
 def render_preview_tab():
-    output_dir = Path("srs_output")
-    canonical_path = output_dir / "canonical.json"
+    st.markdown("### 📄 Preview & Export Generated SRS Documents")
+
+    jobs = job_manager.list_all_jobs()
+    completed_jobs = [j for j in jobs if j.get("status") == "COMPLETED"]
+
+    if not completed_jobs:
+        st.warning("⚠️ No completed SRS document jobs available yet. Submit and run a project in the **Upload Project** tab.")
+        return
+
+    # Select box to pick completed job
+    job_options = {j["job_id"]: f"{j['archive_name']} — ({j['created_at']})" for j in completed_jobs}
     
-    # Verify canonical requirements exist
-    if not canonical_path.exists():
-        st.warning("⚠️ Requirements have not been frozen yet. Please extract and freeze them in the **Generate Sections** tab.")
-        return
-        
-    with open(canonical_path, "r", encoding="utf-8") as f:
-        canonical = json.load(f)
+    # Pre-select if selected via Dashboard button or active job
+    default_id = st.session_state.get("selected_job_for_preview") or completed_jobs[0]["job_id"]
+    if default_id not in job_options:
+        default_id = completed_jobs[0]["job_id"]
 
-    # Convert session state srs_sections keys (e.g. '1_sec') to integers for assembler
-    sections_by_num = {}
-    for k, v in st.session_state.srs_sections.items():
-        if k.endswith("_sec") and v.strip():
-            try:
-                num = int(k.split("_")[0])
-                sections_by_num[num] = v
-            except ValueError:
-                pass
+    selected_jid = st.selectbox(
+        "Select Completed SRS Document Job",
+        options=list(job_options.keys()),
+        format_func=lambda jid: job_options[jid],
+        index=list(job_options.keys()).index(default_id),
+        key="select_preview_job_dropdown"
+    )
 
-    done_count = len(sections_by_num)
-    total_expected = len(stages.SRS_SECTIONS)
-
-    if done_count == 0:
-        st.warning("⚠️ No sections generated yet. Go to the **Generate Sections** tab to write your SRS.")
+    job = job_manager.get_job_info(selected_jid)
+    if not job:
+        st.error("Cannot load selected job info.")
         return
 
-    st.markdown(f"### 📄 SRS Document Preview — {done_count}/{total_expected} Sections Written")
+    project_name = job.get("clean_project_name", "Project")
+    full_doc = job.get("full_srs_doc", "")
+    canonical = job.get("canonical_requirements", {})
+    srs_sections = job.get("srs_sections", {})
+    verification_reports = job.get("verification_reports", {})
+    stats = job.get("stats", {})
 
-    # Assemble full document
-    project_name = "Unknown Project"
-    if st.session_state.get("codebase_path"):
-        p_name = Path(st.session_state.codebase_path).name
-        if p_name and p_name != "extracted_codebase":
-            project_name = p_name
-    if project_name == "Unknown Project" and st.session_state.get("archive_name"):
-        project_name = st.session_state.archive_name
-    full_doc = assembler.assemble_srs(sections_by_num, canonical, project_name)
-    st.session_state.full_srs_doc = full_doc
+    job_dir = job_manager.BASE_JOBS_DIR / selected_jid
+    canonical_path = job_dir / "canonical.json"
 
     # Assembly stats
     col_dl1, col_dl2, col_dl3 = st.columns(3)
@@ -69,28 +70,27 @@ def render_preview_tab():
             file_name=f"SRS_Document_{project_name}.md",
             mime="text/markdown",
             use_container_width=True,
+            key=f"dl_full_srs_{selected_jid}"
         )
     with exp_cols[1]:
-        # Generate and download audit report
-        reports = st.session_state.get("verification_reports", {})
-        audit_report = assembler.generate_verification_report(reports)
+        audit_report = assembler.generate_verification_report(verification_reports)
         st.download_button(
             label="🛡️ Download Verification Audit Report (.md)",
             data=audit_report,
             file_name=f"SRS_Verification_Report_{project_name}.md",
             mime="text/markdown",
             use_container_width=True,
+            key=f"dl_audit_report_{selected_jid}"
         )
     with exp_cols[2]:
-        # Download canonical JSON
-        with open(canonical_path, "r", encoding="utf-8") as f:
-            canonical_json_text = f.read()
+        canonical_text = json.dumps(canonical, indent=2)
         st.download_button(
             label="🔒 Download Canonical Requirements (.json)",
-            data=canonical_json_text,
+            data=canonical_text,
             file_name=f"canonical_requirements_{project_name}.json",
             mime="application/json",
             use_container_width=True,
+            key=f"dl_canonical_{selected_jid}"
         )
 
     st.markdown("---")
@@ -102,7 +102,8 @@ def render_preview_tab():
         # Table of contents
         st.markdown("#### 📑 Table of Contents")
         for sec_num, sec_title in stages.SRS_SECTIONS:
-            is_done = sec_num in sections_by_num
+            sec_key = f"{sec_num}_sec"
+            is_done = sec_key in srs_sections and bool(srs_sections[sec_key].strip())
             status = "✅" if is_done else "⬜"
             st.markdown(f"{status} **{sec_num}. {sec_title}**")
             
@@ -111,33 +112,28 @@ def render_preview_tab():
         
         # Render each section inside expanders
         for sec_num, sec_title in stages.SRS_SECTIONS:
-            is_done = sec_num in sections_by_num
-            if is_done:
+            sec_key = f"{sec_num}_sec"
+            if sec_key in srs_sections and srs_sections[sec_key].strip():
+                content = srs_sections[sec_key]
                 with st.expander(f"📝 {sec_num}. {sec_title}", expanded=False):
-                    st.markdown(sections_by_num[sec_num])
+                    st.markdown(content)
                     
                     col_sec_dl, col_sec_raw = st.columns(2)
                     with col_sec_dl:
                         assembler_safe_title = sec_title.replace(" ", "_").replace(".", "")
                         st.download_button(
                             label="⬇️ Download Section",
-                            data=sections_by_num[sec_num],
+                            data=content,
                             file_name=f"SRS_Section_{sec_num}_{assembler_safe_title}.md",
                             mime="text/markdown",
-                            key=f"preview_dl_{sec_num}"
+                            key=f"preview_dl_{sec_num}_{selected_jid}"
                         )
                     with col_sec_raw:
-                        if st.button("📋 Show Raw Text", key=f"preview_raw_{sec_num}"):
-                            st.code(sections_by_num[sec_num])
-                            
-        # If Section 11 is not yet in sections, show the auto-generated Traceability Matrix
-        if 11 not in sections_by_num:
-            with st.expander("📝 11. Traceability Matrix (Auto-generated from frozen requirements)", expanded=True):
-                st.markdown(assembler._build_traceability_matrix(canonical))
+                        if st.button("📋 Show Raw Text", key=f"preview_raw_{sec_num}_{selected_jid}"):
+                            st.code(content)
 
     with sub_tab_audit:
-        reports = st.session_state.get("verification_reports", {})
-        if not reports:
-            st.info("No verification audits compiled yet. Run generation in Tab 2 to audit sections.")
+        if not verification_reports:
+            st.info("No verification audit compiled for this job.")
         else:
-            st.markdown(assembler.generate_verification_report(reports))
+            st.markdown(assembler.generate_verification_report(verification_reports))
