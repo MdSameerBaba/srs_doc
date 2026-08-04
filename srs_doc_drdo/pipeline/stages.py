@@ -378,7 +378,7 @@ def run_stage_a(
     )
 
     log(f"Sending to {config['heavy_model']}…")
-    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
+    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000), provider=config.get("llm_provider"), api_key=config.get("gemini_api_key"))
     log(f"Architecture snapshot: {len(result.get('modules', []))} modules detected")
     return result
 
@@ -462,7 +462,7 @@ def run_stage_b(
         summaries: list[dict] = []
         try:
             raw = ollama.chat(
-                config["fast_model"], prompt, config["ollama_url"], expect_json=False, num_ctx=config.get("num_ctx", 64000)
+                config["fast_model"], prompt, config["ollama_url"], expect_json=False, num_ctx=config.get("num_ctx", 64000), provider=config.get("llm_provider"), api_key=config.get("gemini_api_key")
             )
             # Robust extraction of JSON array using balanced bracket parser
             summaries = ollama.extract_json_array(str(raw))
@@ -545,7 +545,7 @@ def run_stage_c(
             edges=json.dumps(edges[:100], indent=2),
         )
         try:
-            res = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
+            res = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000), provider=config.get("llm_provider"), api_key=config.get("gemini_api_key"))
             if isinstance(res, dict):
                 res["module"] = module
                 gl.save_module_rollup(db_path, res)
@@ -593,7 +593,7 @@ def run_stage_d(
         architecture=json.dumps(architecture, indent=2),
     )
     log(f"Sending to {config['heavy_model']} (this is the FREEZE step)…")
-    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
+    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000), provider=config.get("llm_provider"), api_key=config.get("gemini_api_key"))
     frs = result.get("functional_requirements") or []
     nfrs = result.get("non_functional_signals") or []
     acronyms = result.get("acronyms") or []
@@ -627,7 +627,7 @@ def run_stage_e(
         previous_sections_context=previous_sections_context,
         section_instruction=section_instruction
     )
-    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], expect_json=False, num_ctx=config.get("num_ctx", 64000))
+    result = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], expect_json=False, num_ctx=config.get("num_ctx", 64000), provider=config.get("llm_provider"), api_key=config.get("gemini_api_key"))
     # Strip reasoning blocks / preamble any model may add before the prose
     return ollama.clean_llm_output(str(result))
 
@@ -661,7 +661,7 @@ def run_stage_f(
             section_markdown=section_markdown,
         )
         try:
-            report = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000))
+            report = ollama.chat(config["heavy_model"], prompt, config["ollama_url"], num_ctx=config.get("num_ctx", 64000), provider=config.get("llm_provider"), api_key=config.get("gemini_api_key"))
         except Exception:
             report = {"status": "PASS", "missing": [], "hallucinated": [],
                       "renamed": [], "uncited_claims": []}
