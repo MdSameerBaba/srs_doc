@@ -7,6 +7,90 @@ import json
 from datetime import datetime
 
 
+import io
+
+
+def create_docx_bytes(md_text: str, project_name: str = "SRS Document") -> bytes:
+    """
+    Convert Markdown SRS text into a Microsoft Word (.docx) file bytes stream.
+    Supports python-docx if installed, with a pure-Python OpenXML zip fallback.
+    """
+    try:
+        import docx
+        from docx.shared import Inches, Pt
+        doc = docx.Document()
+        
+        # Style Title
+        title_p = doc.add_heading(f"Software Requirements Specification — {project_name}", level=0)
+        title_p.paragraph_format.space_after = Pt(12)
+        
+        for line in md_text.splitlines():
+            line_s = line.strip()
+            if not line_s:
+                continue
+            if line_s.startswith("# "):
+                doc.add_heading(line_s[2:], level=1)
+            elif line_s.startswith("## "):
+                doc.add_heading(line_s[3:], level=2)
+            elif line_s.startswith("### "):
+                doc.add_heading(line_s[4:], level=3)
+            elif line_s.startswith("#### "):
+                doc.add_heading(line_s[5:], level=4)
+            elif line_s.startswith("- ") or line_s.startswith("* "):
+                doc.add_paragraph(line_s[2:], style='List Bullet')
+            elif line_s.startswith("> "):
+                p = doc.add_paragraph(line_s[2:])
+                p.paragraph_format.left_indent = Inches(0.5)
+            elif line_s.startswith("---"):
+                continue
+            else:
+                doc.add_paragraph(line_s)
+                
+        buf = io.BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
+    except Exception:
+        pass
+
+    # Pure-Python OpenXML (.docx) zip builder fallback
+    import zipfile
+    import xml.sax.saxutils as saxutils
+
+    def escape_xml(s: str) -> str:
+        return saxutils.escape(s)
+
+    p_xml_list = []
+    for line in md_text.splitlines():
+        line_s = line.strip()
+        if not line_s or line_s.startswith("---"):
+            continue
+        text_esc = escape_xml(line_s)
+        if line_s.startswith("# "):
+            p_xml_list.append(f'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="36"/></w:rPr><w:t>{text_esc[2:]}</w:t></w:r></w:p>')
+        elif line_s.startswith("## "):
+            p_xml_list.append(f'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="28"/></w:rPr><w:t>{text_esc[3:]}</w:t></w:r></w:p>')
+        elif line_s.startswith("### "):
+            p_xml_list.append(f'<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="24"/></w:rPr><w:t>{text_esc[4:]}</w:t></w:r></w:p>')
+        elif line_s.startswith("- ") or line_s.startswith("* "):
+            p_xml_list.append(f'<w:p><w:pPr><w:pStyle w:val="ListBullet"/></w:pPr><w:r><w:t>• {text_esc[2:]}</w:t></w:r></w:p>')
+        else:
+            p_xml_list.append(f'<w:p><w:r><w:t>{text_esc}</w:t></w:r></w:p>')
+
+    doc_body = "".join(p_xml_list)
+
+    content_types_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'
+    rels_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'
+    document_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{doc_body}</w:body></w:document>'
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types_xml)
+        z.writestr("_rels/.rels", rels_xml)
+        z.writestr("word/document.xml", document_xml)
+
+    return buf.getvalue()
+
+
 # ─────────────────────────────────────────────────────────────
 # Final SRS assembly
 # ─────────────────────────────────────────────────────────────

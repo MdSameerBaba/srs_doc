@@ -62,10 +62,10 @@ def render_preview_tab():
 
     # Exports Row
     st.markdown("#### 📥 Exports")
-    exp_cols = st.columns(3)
+    exp_cols = st.columns(4)
     with exp_cols[0]:
         st.download_button(
-            label="📄 Download Full SRS Document (.md)",
+            label="📄 Download SRS (.md)",
             data=full_doc,
             file_name=f"SRS_Document_{project_name}.md",
             mime="text/markdown",
@@ -73,19 +73,29 @@ def render_preview_tab():
             key=f"dl_full_srs_{selected_jid}"
         )
     with exp_cols[1]:
+        docx_bytes = assembler.create_docx_bytes(full_doc, project_name)
+        st.download_button(
+            label="📝 Download SRS Word (.docx)",
+            data=docx_bytes,
+            file_name=f"SRS_Document_{project_name}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            key=f"dl_full_docx_{selected_jid}"
+        )
+    with exp_cols[2]:
         audit_report = assembler.generate_verification_report(verification_reports)
         st.download_button(
-            label="🛡️ Download Verification Audit Report (.md)",
+            label="🛡️ Audit Report (.md)",
             data=audit_report,
             file_name=f"SRS_Verification_Report_{project_name}.md",
             mime="text/markdown",
             use_container_width=True,
             key=f"dl_audit_report_{selected_jid}"
         )
-    with exp_cols[2]:
+    with exp_cols[3]:
         canonical_text = json.dumps(canonical, indent=2)
         st.download_button(
-            label="🔒 Download Canonical Requirements (.json)",
+            label="🔒 Canonical Data (.json)",
             data=canonical_text,
             file_name=f"canonical_requirements_{project_name}.json",
             mime="application/json",
