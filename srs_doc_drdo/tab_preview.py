@@ -73,7 +73,15 @@ def render_preview_tab():
             key=f"dl_full_srs_{selected_jid}"
         )
     with exp_cols[1]:
-        docx_bytes = assembler.create_docx_bytes(full_doc, project_name)
+        docx_path = job_dir / f"SRS_Document_{project_name}.docx"
+        if docx_path.exists():
+            try:
+                docx_bytes = docx_path.read_bytes()
+            except Exception:
+                docx_bytes = assembler.create_docx_bytes(full_doc, project_name)
+        else:
+            docx_bytes = assembler.create_docx_bytes(full_doc, project_name)
+
         st.download_button(
             label="📝 Download SRS Word (.docx)",
             data=docx_bytes,

@@ -440,9 +440,16 @@ def _run_job_pipeline(job_id: str, archive_path: Path):
             sections_md = {num: srs_sections[f"{num}_sec"] for num, _ in stages.SRS_SECTIONS if f"{num}_sec" in srs_sections}
             full_doc = assembler.assemble_srs(sections_md, reqs, project_name)
 
-            # Save document to disk
+            # Save documents to disk
             doc_path = job_dir / f"SRS_Document_{project_name}.md"
             doc_path.write_text(full_doc, encoding="utf-8")
+
+            docx_path = job_dir / f"SRS_Document_{project_name}.docx"
+            try:
+                docx_bytes = assembler.create_docx_bytes(full_doc, project_name)
+                docx_path.write_bytes(docx_bytes)
+            except Exception as exc:
+                add_job_log(job_id, f"⚠ Word docx generation warning: {exc}")
 
             audit_path = job_dir / f"SRS_Verification_Report_{project_name}.md"
             audit_report = assembler.generate_verification_report(verification_reports)
