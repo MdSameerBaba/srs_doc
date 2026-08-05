@@ -10,7 +10,6 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-import PyPDF2
 import streamlit as st
 
 from constants import SUPPORTED_EXTENSIONS, SRS_SECTIONS, SECTION_PROMPTS
@@ -56,10 +55,16 @@ def _matches_exclusion(rel_path: str, patterns: list[str]) -> bool:
 
 def read_pdf(data: bytes) -> str:
     try:
+        import PyPDF2
         reader = PyPDF2.PdfReader(io.BytesIO(data))
         return "\n".join(p.extract_text() or "" for p in reader.pages)
     except Exception:
-        return ""
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            return "\n".join(p.extract_text() or "" for p in reader.pages)
+        except Exception:
+            return ""
 
 def read_text(data: bytes) -> str:
     try:
