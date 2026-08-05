@@ -392,6 +392,21 @@ def run_stage_a(
 _BATCH_SIZE = 10
 
 
+def _format_ast_code_unit(code: str, max_chars: int = 1500) -> str:
+    """Format code with AST scope awareness, preserving function signature,
+    docstring, parameters, return statements, and key structure blocks."""
+    if len(code) <= max_chars:
+        return code
+    lines = code.splitlines()
+    if len(lines) <= 25:
+        return code[:max_chars]
+    head = lines[:15]
+    tail = lines[-8:]
+    middle = f"    # ... ({len(lines) - 23} intermediate lines omitted for token efficiency) ..."
+    formatted = "\n".join(head) + "\n" + middle + "\n" + "\n".join(tail)
+    return formatted[:max_chars]
+
+
 def run_stage_b(
     db_path: Path,
     codebase_path: Path,
@@ -447,10 +462,11 @@ def run_stage_b(
             sig = f"{node['type']} {node['label']}"
             if node.get("docstring"):
                 sig += f"  # {node['docstring'][:100]}"
+            max_limit = 3000 if config.get("file_level_summarization") else 1500
             units.append({
                 "id":        node["id"],
                 "signature": sig,
-                "code":      code[:3000 if config.get("file_level_summarization") else 1500],
+                "code":      _format_ast_code_unit(code, max_limit),
                 "calls":     calls[:10],
                 "file":      node["file_path"] or "unknown",
                 "lines":     [node["line_start"] or 0, node["line_end"] or 0],

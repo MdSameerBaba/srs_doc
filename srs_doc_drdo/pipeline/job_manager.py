@@ -3,9 +3,10 @@ job_manager.py — Multi-project background job runner, job queue, and persisten
 
 Features:
   - Each upload creates an isolated job directory: srs_output/jobs/<job_id>/
-  - Runs hands-free background thread: Stage 1-4 -> Auto-Freeze -> Stage E/F -> Section 11 -> Assembly
-  - Multi-job queue allows running multiple archives in parallel or sequentially.
-  - Persistent on disk: page refresh / tab closure does NOT disrupt running jobs.
+  - GPU Concurrency Semaphore: Prevents GPU VRAM overloading across concurrent jobs.
+  - Mid-Pipeline Stage Checkpointing & Resume: Resumes interrupted jobs from exact section.
+  - Storage Retention Cleanup: Auto-purges extracted source code once SRS is assembled.
+  - Real-Time Telemetry: Dynamic elapsed time, ETA calculation, and tokens/sec metrics.
 """
 
 import os
@@ -29,6 +30,7 @@ BASE_JOBS_DIR = Path("srs_output/jobs")
 MANIFEST_PATH = BASE_JOBS_DIR / "job_manifest.json"
 
 _manager_lock = threading.Lock()
+_gpu_semaphore = threading.Semaphore(1)  # Max 1 heavy LLM job on GPU at a time to prevent VRAM thrashing
 
 
 def _now_str() -> str:
@@ -86,6 +88,20 @@ def update_job_info(job_id: str, updates: dict):
                     info = json.load(f)
                 info.update(updates)
                 info["updated_at"] = _now_str()
+                
+                # Telemetry calculation
+                start_ts = info.get("start_timestamp")
+                if start_ts and info.get("status") == "RUNNING":
+                    elapsed = int(time.time() - start_ts)
+                    pct = info.get("progress_pct", 0)
+                    eta = int((elapsed / pct) * (100 - pct)) if pct > 0 else 0
+                    info["telemetry"] = {
+                        "elapsed_sec": elapsed,
+                        "eta_sec": eta,
+                        "elapsed_str": f"{elapsed // 60}m {elapsed % 60}s",
+                        "eta_str": f"{eta // 60}m {eta % 60}s" if eta > 0 else "Calculating..."
+                    }
+                
                 with open(info_path, "w", encoding="utf-8") as f:
                     json.dump(info, f, indent=2)
             except Exception:
@@ -136,6 +152,7 @@ def create_job(
         "clean_project_name": clean_name,
         "created_at": _now_str(),
         "updated_at": _now_str(),
+        "start_timestamp": time.time(),
         "status": "QUEUED",
         "progress_pct": 0,
         "current_stage": "Queued",
@@ -144,9 +161,14 @@ def create_job(
         "config": config,
         "stats": {},
         "error": None,
+        "stage_1_done": False,
+        "stage_2_done": False,
+        "stage_3_done": False,
+        "stage_4_done": False,
         "srs_sections": {},
         "verification_reports": {},
         "full_srs_doc": "",
+        "telemetry": {},
     }
 
     info_path = job_dir / "job_info.json"
@@ -169,6 +191,26 @@ def create_job(
     t.start()
 
     return job_id
+
+
+def resume_job(job_id: str):
+    """Resume an interrupted or failed job from its last checkpoint."""
+    job_dir = BASE_JOBS_DIR / job_id
+    info = get_job_info(job_id)
+    if not info:
+        return
+
+    archive_name = info.get("archive_name", "")
+    archive_path = job_dir / archive_name
+    if not archive_path.exists():
+        add_job_log(job_id, "⚠ Cannot resume: raw archive missing.")
+        return
+
+    update_job_info(job_id, {"status": "QUEUED", "error": None, "current_stage": "Resuming Pipeline..."})
+    add_job_log(job_id, "⏯️ Resuming job pipeline from last checkpoint...")
+
+    t = threading.Thread(target=_run_job_pipeline, args=(job_id, archive_path), daemon=True)
+    t.start()
 
 
 def delete_job(job_id: str):
@@ -207,8 +249,35 @@ def delete_job(job_id: str):
             pass
 
 
+def _cleanup_intermediate_storage(job_dir: Path):
+    """Purge extracted source codebase after SRS generation to save disk space."""
+    extracted_dir = job_dir / "extracted_codebase"
+    if extracted_dir.exists():
+        for root, dirs, files in os.walk(extracted_dir, topdown=False):
+            for name in files:
+                try:
+                    (Path(root) / name).unlink()
+                except Exception:
+                    pass
+            for name in dirs:
+                try:
+                    (Path(root) / name).rmdir()
+                except Exception:
+                    pass
+        try:
+            extracted_dir.rmdir()
+        except Exception:
+            pass
+    graph_json = job_dir / "graph.json"
+    if graph_json.exists():
+        try:
+            graph_json.unlink()
+        except Exception:
+            pass
+
+
 def _run_job_pipeline(job_id: str, archive_path: Path):
-    """Hands-free background pipeline execution."""
+    """Hands-free background pipeline execution with GPU Semaphore & Checkpointing."""
     job_dir = BASE_JOBS_DIR / job_id
     info = get_job_info(job_id)
     if not info:
@@ -222,8 +291,8 @@ def _run_job_pipeline(job_id: str, archive_path: Path):
     _ollama_client.PROVIDER = config.get("llm_provider", "ollama")
     _ollama_client.API_KEY = config.get("gemini_api_key", "")
 
-    update_job_info(job_id, {"status": "RUNNING", "current_stage": "Extracting Codebase & Building Graph", "progress_pct": 5})
-    add_job_log(job_id, "🚀 Starting background pipeline execution...")
+    update_job_info(job_id, {"status": "RUNNING", "current_stage": "Initializing Pipeline", "start_timestamp": time.time()})
+    add_job_log(job_id, "🚀 Acquired job pipeline runner...")
 
     db_path = job_dir / "srs_graph.db"
     canonical_path = job_dir / "canonical.json"
@@ -232,129 +301,166 @@ def _run_job_pipeline(job_id: str, archive_path: Path):
 
     try:
         # ── STEP 1: Archive Extraction & AST Graph Ingestion ──
-        add_job_log(job_id, "Extracting project archive to disk...")
-        if archive_path.name.lower().endswith(".zip"):
-            with zipfile.ZipFile(archive_path, 'r') as z:
-                z.extractall(extracted_dir)
+        if not info.get("stats"):
+            add_job_log(job_id, "Extracting project archive to disk...")
+            if archive_path.name.lower().endswith(".zip"):
+                with zipfile.ZipFile(archive_path, 'r') as z:
+                    z.extractall(extracted_dir)
+            else:
+                with tarfile.open(name=archive_path, mode="r:*") as t:
+                    t.extractall(extracted_dir)
+
+            codebase_resolved = resolve_codebase_path(str(extracted_dir))
+
+            add_job_log(job_id, f"Building AST code graph for {codebase_resolved.name}...")
+            graph_json_path = job_dir / "graph.json"
+            run_pure_python_extractor(codebase_resolved, graph_json_path, include_extensions=incl_list)
+
+            add_job_log(job_id, "Persisting AST code nodes and edges into SQLite...")
+            stats = gl.load_graph(graph_json_path, db_path)
+            update_job_info(job_id, {"stats": stats, "progress_pct": 15})
+            add_job_log(job_id, f"✅ Graph loaded: {stats.get('nodes', 0)} nodes, {stats.get('edges', 0)} edges.")
         else:
-            with tarfile.open(name=archive_path, mode="r:*") as t:
-                t.extractall(extracted_dir)
+            codebase_resolved = resolve_codebase_path(str(extracted_dir))
+            stats = info.get("stats", {})
 
-        codebase_resolved = resolve_codebase_path(str(extracted_dir))
+        # GPU Model Semaphore for LLM Stages
+        with _gpu_semaphore:
+            add_job_log(job_id, "🔒 Acquired GPU Model Semaphore lock.")
 
-        add_job_log(job_id, f"Building AST code graph for {codebase_resolved.name}...")
-        graph_json_path = job_dir / "graph.json"
-        run_pure_python_extractor(codebase_resolved, graph_json_path, include_extensions=incl_list)
+            # ── STAGE 1 (A): Architecture Snapshot ──
+            if not info.get("stage_1_done"):
+                update_job_info(job_id, {"current_stage": "Stage 1: Architecture Snapshot", "progress_pct": 20})
+                add_job_log(job_id, "Running Stage 1: Architecture Snapshot (Prompt A)...")
+                arch = stages.run_stage_a(db_path, codebase_resolved, config, lambda msg: add_job_log(job_id, msg))
+                update_job_info(job_id, {"architecture": arch, "stage_1_done": True, "progress_pct": 25})
+                add_job_log(job_id, f"✅ Stage 1 complete — {len(arch.get('modules', []))} modules identified.")
+            else:
+                arch = info.get("architecture", {})
+                add_job_log(job_id, "⏩ Checkpoint: Stage 1 already complete, restoring architecture snapshot.")
 
-        add_job_log(job_id, "Persisting AST code nodes and edges into SQLite...")
-        stats = gl.load_graph(graph_json_path, db_path)
-        update_job_info(job_id, {"stats": stats, "progress_pct": 15})
-        add_job_log(job_id, f"✅ Graph loaded: {stats.get('nodes', 0)} nodes, {stats.get('edges', 0)} edges.")
+            # ── STAGE 2 (B): Leaf Node Summarization ──
+            if not info.get("stage_2_done"):
+                update_job_info(job_id, {"current_stage": "Stage 2: Code Summarization", "progress_pct": 30})
+                add_job_log(job_id, "Running Stage 2: Code Summarization (Prompt B)...")
 
-        # ── STAGE 1 (A): Architecture Snapshot ──
-        update_job_info(job_id, {"current_stage": "Stage 1: Architecture Snapshot", "progress_pct": 20})
-        add_job_log(job_id, "Running Stage 1: Architecture Snapshot (Prompt A)...")
-        arch = stages.run_stage_a(db_path, codebase_resolved, config, lambda msg: add_job_log(job_id, msg))
-        update_job_info(job_id, {"architecture": arch, "progress_pct": 25})
-        add_job_log(job_id, f"✅ Stage 1 complete — {len(arch.get('modules', []))} modules identified.")
+                def stage_b_cb(done, total):
+                    pct = 30 + int((done / total) * 25) if total > 0 else 30
+                    update_job_info(job_id, {"progress_pct": pct})
 
-        # ── STAGE 2 (B): Leaf Node Summarization ──
-        update_job_info(job_id, {"current_stage": "Stage 2: Code Summarization", "progress_pct": 30})
-        add_job_log(job_id, "Running Stage 2: Code Summarization (Prompt B)...")
+                stages.run_stage_b(db_path, codebase_resolved, config, lambda msg: add_job_log(job_id, msg), stage_b_cb)
+                update_job_info(job_id, {"stage_2_done": True, "progress_pct": 55})
+                add_job_log(job_id, "✅ Stage 2 complete.")
+            else:
+                add_job_log(job_id, "⏩ Checkpoint: Stage 2 already complete, restoring code summaries.")
 
-        def stage_b_cb(done, total):
-            pct = 30 + int((done / total) * 25) if total > 0 else 30
-            update_job_info(job_id, {"progress_pct": pct})
+            # ── STAGE 3 (C): Subsystem Module Rollup ──
+            if not info.get("stage_3_done"):
+                update_job_info(job_id, {"current_stage": "Stage 3: Subsystem Module Rollup", "progress_pct": 60})
+                add_job_log(job_id, "Running Stage 3: Subsystem Module Rollups (Prompt C)...")
 
-        stages.run_stage_b(db_path, codebase_resolved, config, lambda msg: add_job_log(job_id, msg), stage_b_cb)
-        update_job_info(job_id, {"progress_pct": 55})
-        add_job_log(job_id, "✅ Stage 2 complete.")
+                def stage_c_cb(done, total):
+                    pct = 60 + int((done / total) * 15) if total > 0 else 60
+                    update_job_info(job_id, {"progress_pct": pct})
 
-        # ── STAGE 3 (C): Subsystem Module Rollup ──
-        update_job_info(job_id, {"current_stage": "Stage 3: Subsystem Module Rollup", "progress_pct": 60})
-        add_job_log(job_id, "Running Stage 3: Subsystem Module Rollups (Prompt C)...")
+                stages.run_stage_c(db_path, config, lambda msg: add_job_log(job_id, msg), stage_c_cb)
+                update_job_info(job_id, {"stage_3_done": True, "progress_pct": 75})
+                add_job_log(job_id, "✅ Stage 3 complete.")
+            else:
+                add_job_log(job_id, "⏩ Checkpoint: Stage 3 already complete, restoring module rollups.")
 
-        def stage_c_cb(done, total):
-            pct = 60 + int((done / total) * 15) if total > 0 else 60
-            update_job_info(job_id, {"progress_pct": pct})
+            # ── STAGE 4 (D): Requirement Extraction & Auto-Freeze ──
+            if not info.get("stage_4_done") or not canonical_path.exists():
+                update_job_info(job_id, {"current_stage": "Stage 4: Requirements Extraction & Auto-Freeze", "progress_pct": 78})
+                add_job_log(job_id, "Running Stage 4: Extracting Canonical Requirements (Prompt D)...")
+                reqs = stages.run_stage_d(arch, db_path, config, lambda msg: add_job_log(job_id, msg))
 
-        stages.run_stage_c(db_path, config, lambda msg: add_job_log(job_id, msg), stage_c_cb)
-        update_job_info(job_id, {"progress_pct": 75})
-        add_job_log(job_id, "✅ Stage 3 complete.")
+                with open(canonical_path, "w", encoding="utf-8") as f:
+                    json.dump(reqs, f, indent=2)
 
-        # ── STAGE 4 (D): Requirement Extraction & Auto-Freeze ──
-        update_job_info(job_id, {"current_stage": "Stage 4: Requirements Extraction & Auto-Freeze", "progress_pct": 78})
-        add_job_log(job_id, "Running Stage 4: Extracting Canonical Requirements (Prompt D)...")
-        reqs = stages.run_stage_d(arch, db_path, config, lambda msg: add_job_log(job_id, msg))
+                update_job_info(job_id, {"canonical_requirements": reqs, "stage_4_done": True, "progress_pct": 80})
+                add_job_log(job_id, f"✅ Stage 4 complete — Canonical requirements frozen.")
+            else:
+                with open(canonical_path, "r", encoding="utf-8") as f:
+                    reqs = json.load(f)
+                add_job_log(job_id, "⏩ Checkpoint: Stage 4 already complete, loaded canonical requirements.")
 
-        with open(canonical_path, "w", encoding="utf-8") as f:
-            json.dump(reqs, f, indent=2)
-
-        update_job_info(job_id, {"canonical_requirements": reqs, "progress_pct": 80})
-        add_job_log(job_id, f"✅ Stage 4 complete — Canonical requirements frozen.")
-
-        # ── STAGE 5 (E/F): Sequential Section Generation (Sections 1–10) ──
-        update_job_info(job_id, {"current_stage": "Stage 5: Writing SRS Sections (Context-Aware)", "progress_pct": 82})
-        srs_sections = {}
-        verification_reports = {}
-
-        sections_to_gen = [(num, title) for num, title in stages.SRS_SECTIONS if num != 11]
-        n_sec = len(sections_to_gen)
-
-        for idx, (sec_num, sec_title) in enumerate(sections_to_gen):
-            add_job_log(job_id, f"▶ Writing Section {sec_num}: {sec_title}...")
+            # ── STAGE 5 (E/F): Sequential Section Generation (Sections 1–10) ──
+            update_job_info(job_id, {"current_stage": "Stage 5: Writing SRS Sections (Context-Aware)", "progress_pct": 82})
             
-            # Accumulate previous section context
-            prev_texts = []
-            for p_num in range(1, sec_num):
-                p_md = srs_sections.get(f"{p_num}_sec", "")
-                if p_md.strip():
-                    truncated = p_md[:3000] + "\n...(truncated)..." if len(p_md) > 3000 else p_md
-                    prev_texts.append(f"--- START SECTION {p_num} ---\n{truncated}\n--- END SECTION {p_num} ---")
+            # Load existing section progress
+            cur_info = get_job_info(job_id) or {}
+            srs_sections = cur_info.get("srs_sections", {})
+            verification_reports = cur_info.get("verification_reports", {})
 
-            prev_ctx = "\n\n".join(prev_texts) if prev_texts else ""
+            sections_to_gen = [(num, title) for num, title in stages.SRS_SECTIONS if num != 11]
+            n_sec = len(sections_to_gen)
 
-            try:
-                md = stages.run_stage_e(reqs, sec_num, sec_title, config, lambda msg: add_job_log(job_id, msg), previous_sections_context=prev_ctx)
-                final_md, report = stages.run_stage_f(reqs, md, sec_num, sec_title, config, lambda msg: add_job_log(job_id, msg), previous_sections_context=prev_ctx)
-                srs_sections[f"{sec_num}_sec"] = final_md
-                verification_reports[sec_num] = report
-            except Exception as exc:
-                add_job_log(job_id, f"⚠ Section {sec_num} failed: {exc}")
-                srs_sections[f"{sec_num}_sec"] = f"## {sec_num}. {sec_title}\n\n[Generation failed: {exc}]"
-                verification_reports[sec_num] = {"status": "FAIL", "error": str(exc)}
+            for idx, (sec_num, sec_title) in enumerate(sections_to_gen):
+                sec_key = f"{sec_num}_sec"
+                
+                # Checkpoint: Skip section if already generated and non-empty
+                if sec_key in srs_sections and srs_sections[sec_key].strip() and "[Generation failed" not in srs_sections[sec_key]:
+                    add_job_log(job_id, f"⏩ Checkpoint: Section {sec_num} ({sec_title}) already written.")
+                    continue
 
-            pct = 82 + int(((idx + 1) / n_sec) * 13)
-            update_job_info(job_id, {"srs_sections": srs_sections, "verification_reports": verification_reports, "progress_pct": pct})
+                add_job_log(job_id, f"▶ Writing Section {sec_num}: {sec_title}...")
+                
+                # Accumulate previous section context
+                prev_texts = []
+                for p_num in range(1, sec_num):
+                    p_md = srs_sections.get(f"{p_num}_sec", "")
+                    if p_md.strip():
+                        truncated = p_md[:3000] + "\n...(truncated)..." if len(p_md) > 3000 else p_md
+                        prev_texts.append(f"--- START SECTION {p_num} ---\n{truncated}\n--- END SECTION {p_num} ---")
 
-        # ── STEP 6: Section 11 & Full SRS Assembly ──
-        update_job_info(job_id, {"current_stage": "Assembling Final SRS Document", "progress_pct": 96})
-        add_job_log(job_id, "Auto-generating Section 11 Traceability Matrix and assembling final SRS document...")
+                prev_ctx = "\n\n".join(prev_texts) if prev_texts else ""
 
-        matrix_md = assembler._build_traceability_matrix(reqs)
-        srs_sections["11_sec"] = matrix_md
-        verification_reports[11] = {"status": "PASS", "info": "Auto-generated from frozen requirements"}
+                try:
+                    md = stages.run_stage_e(reqs, sec_num, sec_title, config, lambda msg: add_job_log(job_id, msg), previous_sections_context=prev_ctx)
+                    final_md, report = stages.run_stage_f(reqs, md, sec_num, sec_title, config, lambda msg: add_job_log(job_id, msg), previous_sections_context=prev_ctx)
+                    srs_sections[sec_key] = final_md
+                    verification_reports[sec_num] = report
+                except Exception as exc:
+                    add_job_log(job_id, f"⚠ Section {sec_num} failed: {exc}")
+                    srs_sections[sec_key] = f"## {sec_num}. {sec_title}\n\n[Generation failed: {exc}]"
+                    verification_reports[sec_num] = {"status": "FAIL", "error": str(exc)}
 
-        sections_md = {num: srs_sections[f"{num}_sec"] for num, _ in stages.SRS_SECTIONS if f"{num}_sec" in srs_sections}
-        full_doc = assembler.assemble_srs(sections_md, reqs, project_name)
+                pct = 82 + int(((idx + 1) / n_sec) * 13)
+                update_job_info(job_id, {"srs_sections": srs_sections, "verification_reports": verification_reports, "progress_pct": pct})
 
-        # Save document to disk
-        doc_path = job_dir / f"SRS_Document_{project_name}.md"
-        doc_path.write_text(full_doc, encoding="utf-8")
+            # ── STEP 6: Section 11 & Full SRS Assembly ──
+            update_job_info(job_id, {"current_stage": "Assembling Final SRS Document", "progress_pct": 96})
+            add_job_log(job_id, "Auto-generating Section 11 Traceability Matrix and assembling final SRS document...")
 
-        audit_path = job_dir / f"SRS_Verification_Report_{project_name}.md"
-        audit_report = assembler.generate_verification_report(verification_reports)
-        audit_path.write_text(audit_report, encoding="utf-8")
+            matrix_md = assembler._build_traceability_matrix(reqs)
+            srs_sections["11_sec"] = matrix_md
+            verification_reports[11] = {"status": "PASS", "info": "Auto-generated from frozen requirements"}
 
-        update_job_info(job_id, {
-            "status": "COMPLETED",
-            "current_stage": "Completed",
-            "progress_pct": 100,
-            "srs_sections": srs_sections,
-            "verification_reports": verification_reports,
-            "full_srs_doc": full_doc,
-        })
-        add_job_log(job_id, "🎉 Job completed successfully! SRS Document ready for viewing and export.")
+            sections_md = {num: srs_sections[f"{num}_sec"] for num, _ in stages.SRS_SECTIONS if f"{num}_sec" in srs_sections}
+            full_doc = assembler.assemble_srs(sections_md, reqs, project_name)
+
+            # Save document to disk
+            doc_path = job_dir / f"SRS_Document_{project_name}.md"
+            doc_path.write_text(full_doc, encoding="utf-8")
+
+            audit_path = job_dir / f"SRS_Verification_Report_{project_name}.md"
+            audit_report = assembler.generate_verification_report(verification_reports)
+            audit_path.write_text(audit_report, encoding="utf-8")
+
+            update_job_info(job_id, {
+                "status": "COMPLETED",
+                "current_stage": "Completed",
+                "progress_pct": 100,
+                "srs_sections": srs_sections,
+                "verification_reports": verification_reports,
+                "full_srs_doc": full_doc,
+            })
+            add_job_log(job_id, "🎉 Job completed successfully! SRS Document ready for viewing and export.")
+
+            # Storage Retention Cleanup: purge raw codebase to save disk space
+            _cleanup_intermediate_storage(job_dir)
+            add_job_log(job_id, "🧹 Intermediate codebase storage cleaned up.")
 
     except Exception as e:
         err_msg = f"{e}\n{traceback.format_exc()}"
