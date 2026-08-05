@@ -12,7 +12,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────
 
 def assemble_srs(
-    sections: dict[int, str],
+    sections: dict,
     canonical: dict,
     project_name: str = "Unknown Project",
 ) -> str:
@@ -21,6 +21,17 @@ def assemble_srs(
     Section 11 (Traceability Matrix) is auto-generated from canonical FRs
     if not already present in `sections`.
     """
+    norm_sections: dict[int, str] = {}
+    for k, v in sections.items():
+        try:
+            if isinstance(k, str):
+                num = int(k.split("_")[0])
+            else:
+                num = int(k)
+            norm_sections[num] = str(v)
+        except Exception:
+            pass
+
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     header = f"""\
@@ -41,13 +52,13 @@ def assemble_srs(
 
     body_parts: list[str] = [header]
 
-    for section_num in sorted(sections.keys()):
-        md = sections[section_num].strip()
+    for section_num in sorted(norm_sections.keys()):
+        md = norm_sections[section_num].strip()
         body_parts.append(md)
         body_parts.append("\n\n---\n\n")
 
     # ── Auto-generate Section 11 if missing ────────────────
-    if 11 not in sections:
+    if 11 not in norm_sections:
         body_parts.append(_build_traceability_matrix(canonical))
         body_parts.append("\n\n---\n\n")
 
